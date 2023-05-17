@@ -28,8 +28,11 @@ import library.custom_train_functions as custom_train_functions
 from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset
 
 import torchvision
-from transformers import CLIPModel, CLIPImageProcessor
+from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from aesthetic_predictor.aesthetic_predictor import MLP
+
+import logging
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 
 # TODO 他のスクリプトと共通化する
@@ -559,9 +562,10 @@ def train(args):
     # aesthetic predictor loss setup
     # load clip
     clip_path = "openai/clip-vit-large-patch14"
-    clip_model = CLIPModel.from_pretrained(clip_path).to(accelerator.device, dtype=weight_dtype)
+    clip_model = CLIPVisionModelWithProjection.from_pretrained(clip_path)
+    clip_model.to(accelerator.device, dtype=weight_dtype)
     proc = CLIPImageProcessor.from_pretrained(clip_path)
-    dim = clip_model.projection_dim
+    dim = clip_model.config.projection_dim
     # define transforms while preserving gradient flow
     # TODO(feffy380): use settings from CLIPImageProcessor
     transforms = torch.nn.Sequential(
@@ -672,7 +676,7 @@ def train(args):
                 images = clip_process(images)
                 # calculate aesthetic loss
                 # with torch.no_grad():
-                image_embeddings = clip_model.get_image_features(images)
+                image_embeddings = clip_model(images).image_embeds
                 loss_g = [model(image_embeddings) for model in aesthetic_models]
                 loss_g = torch.stack(loss_g).mean(dim=-1) * aesthetic_rating_weights
                 loss_g = loss_g.sum()
