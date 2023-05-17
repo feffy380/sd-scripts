@@ -27,6 +27,10 @@ import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
 from library.custom_train_functions import apply_snr_weight, get_weighted_text_embeddings, pyramid_noise_like, apply_noise_offset
 
+import torchvision
+from transformers import CLIPModel, CLIPImageProcessor
+from aesthetic_predictor.aesthetic_predictor import MLP
+
 
 # TODO 他のスクリプトと共通化する
 def generate_step_logs(args: argparse.Namespace, current_loss, avr_loss, lr_scheduler):
@@ -552,6 +556,38 @@ def train(args):
             print(f"removing old checkpoint: {old_ckpt_file}")
             os.remove(old_ckpt_file)
 
+    # aesthetic predictor loss setup
+    # load clip
+    clip_path = "openai/clip-vit-large-patch14"
+    clip_model = CLIPModel.from_pretrained(clip_path).to(accelerator.device, dtype=weight_dtype)
+    proc = CLIPImageProcessor.from_pretrained(clip_path)
+    dim = clip_model.projection_dim
+    # define transforms while preserving gradient flow
+    # TODO(feffy380): use settings from CLIPImageProcessor
+    transforms = torch.nn.Sequential(
+        torchvision.transforms.Resize([proc.size["shortest_edge"]], interpolation=proc.resample, antialias=True),
+        torchvision.transforms.CenterCrop((proc.crop_size["height"], proc.crop_size["width"])),
+        torchvision.transforms.Normalize(proc.image_mean, proc.image_std),
+    )
+    clip_process = torch.jit.script(transforms)
+    # load models
+    model_paths = [
+        "aesthetic_predictor/models/e621-l14-rhoLoss.ckpt",
+        "aesthetic_predictor/models/starboard_cursed-l14-rhoLoss.ckpt",
+    ]
+    aesthetic_rating_weights = torch.FloatTensor([-1, -1]).to(accelerator.device, dtype=weight_dtype)
+    aesthetic_models = []
+    for model_path in model_paths:
+        model = MLP(dim)
+        state_dict = torch.load(model_path)
+        state_dict = state_dict.get("state_dict", state_dict)
+        model.load_state_dict(state_dict)
+        model.to(accelerator.device, dtype=weight_dtype).eval()
+        aesthetic_models.append(model)
+    lmda = 0.005  # TODO(feffy380): learned parameter on unet
+    vae.requires_grad_(True).to(accelerator.device)
+    # vae.to(accelerator.device)
+
     # training loop
     for epoch in range(num_train_epochs):
         if is_main_process:
@@ -626,6 +662,24 @@ def train(args):
 
                 loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
+                # aesthetic loss
+                # decode latents so they can be run through clip
+                latents_pred = (noisy_latents - noise_pred).to(dtype=weight_dtype)
+                latents_pred = 1 / 0.18215 * latents_pred
+                images = vae.decode(latents_pred).sample
+                images = (images / 2 + 0.5).clamp(0, 1)
+                # images = images.permute(0, 2, 3, 1)
+                images = clip_process(images)
+                # calculate aesthetic loss
+                # with torch.no_grad():
+                image_embeddings = clip_model.get_image_features(images)
+                loss_g = [model(image_embeddings) for model in aesthetic_models]
+                loss_g = torch.stack(loss_g).mean(dim=-1) * aesthetic_rating_weights
+                loss_g = loss_g.sum()
+                # TODO(feffy380): calculate moving average G
+                unet_loss = loss
+                loss = loss + lmda * loss_g
+
                 accelerator.backward(loss)
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
                     params_to_clip = network.get_trainable_params()
@@ -640,9 +694,10 @@ def train(args):
                 progress_bar.update(1)
                 global_step += 1
 
-                train_util.sample_images(
-                    accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet
-                )
+                with torch.inference_mode():
+                    train_util.sample_images(
+                        accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet
+                    )
 
                 # 指定ステップごとにモデルを保存
                 if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
@@ -659,7 +714,8 @@ def train(args):
                             remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                             remove_model(remove_ckpt_name)
 
-            current_loss = loss.detach().item()
+            # TODO(feffy380): log unet_loss and combined
+            current_loss = unet_loss.detach().item()
             if epoch == 0:
                 loss_list.append(current_loss)
             else:
@@ -698,7 +754,8 @@ def train(args):
                 if args.save_state:
                     train_util.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
-        train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+        with torch.inference_mode():
+            train_util.sample_images(accelerator, args, epoch + 1, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         # end of epoch
 
