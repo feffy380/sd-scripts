@@ -573,13 +573,14 @@ def train(args):
         torchvision.transforms.CenterCrop((proc.crop_size["height"], proc.crop_size["width"])),
         torchvision.transforms.Normalize(proc.image_mean, proc.image_std),
     )
-    clip_process = torch.jit.script(transforms)
+    clip_process = torch.jit.script(transforms).to(accelerator.device, dtype=weight_dtype)
     # load models
     model_paths = [
         "aesthetic_predictor/models/e621-l14-rhoLoss.ckpt",
         "aesthetic_predictor/models/starboard_cursed-l14-rhoLoss.ckpt",
     ]
     aesthetic_rating_weights = torch.FloatTensor([-1, -1]).to(accelerator.device, dtype=weight_dtype)
+    # aesthetic_rating_weights = torch.FloatTensor([-1]).to(accelerator.device, dtype=weight_dtype)
     aesthetic_models = []
     for model_path in model_paths:
         model = MLP(dim)
@@ -588,9 +589,9 @@ def train(args):
         model.load_state_dict(state_dict)
         model.to(accelerator.device, dtype=weight_dtype).eval()
         aesthetic_models.append(model)
-    lmda = 0.005  # TODO(feffy380): learned parameter on unet
+    lmda = 0.01  # TODO(feffy380): learned parameter on unet
+    # unet.lmda = torch.nn.Parameter(torch.rand(1))
     vae.requires_grad_(True).to(accelerator.device)
-    # vae.to(accelerator.device)
 
     # training loop
     for epoch in range(num_train_epochs):
@@ -672,13 +673,12 @@ def train(args):
                 latents_pred = 1 / 0.18215 * latents_pred
                 images = vae.decode(latents_pred).sample
                 images = (images / 2 + 0.5).clamp(0, 1)
-                # images = images.permute(0, 2, 3, 1)
                 images = clip_process(images)
                 # calculate aesthetic loss
                 # with torch.no_grad():
                 image_embeddings = clip_model(images).image_embeds
                 loss_g = [model(image_embeddings) for model in aesthetic_models]
-                loss_g = torch.stack(loss_g).mean(dim=-1) * aesthetic_rating_weights
+                loss_g = torch.stack(loss_g).mean(dim=-1).squeeze(dim=-1) * aesthetic_rating_weights
                 loss_g = loss_g.sum()
                 # TODO(feffy380): calculate moving average G
                 unet_loss = loss
