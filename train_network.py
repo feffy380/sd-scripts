@@ -589,9 +589,15 @@ def train(args):
         model.load_state_dict(state_dict)
         model.to(accelerator.device, dtype=weight_dtype).eval()
         aesthetic_models.append(model)
-    lmda = 0.01  # TODO(feffy380): learned parameter on unet
-    # unet.lmda = torch.nn.Parameter(torch.rand(1))
     vae.requires_grad_(True).to(accelerator.device)
+    # learned lambda
+    lmda = torch.tensor(1e-4, device=accelerator.device)
+    # lmda = torch.tensor(1e-3, device=accelerator.device, requires_grad=True)
+    # optimizer.add_param_group({"params": lmda, "lr": 1e-4})
+    # aesthetic loss moving average
+    g_list = []
+    g_total = 0.0
+    g_window = 10
 
     # training loop
     for epoch in range(num_train_epochs):
@@ -665,7 +671,7 @@ def train(args):
                 if args.min_snr_gamma:
                     loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
 
-                loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
+                unet_loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
                 # aesthetic loss
                 # decode latents so they can be run through clip
@@ -675,14 +681,25 @@ def train(args):
                 images = (images / 2 + 0.5).clamp(0, 1)
                 images = clip_process(images)
                 # calculate aesthetic loss
-                # with torch.no_grad():
                 image_embeddings = clip_model(images).image_embeds
                 loss_g = [model(image_embeddings) for model in aesthetic_models]
                 loss_g = torch.stack(loss_g).mean(dim=-1).squeeze(dim=-1) * aesthetic_rating_weights
-                loss_g = loss_g.sum()
-                # TODO(feffy380): calculate moving average G
-                unet_loss = loss
-                loss = loss + lmda * loss_g
+                loss_g = torch.sigmoid(loss_g).mean()
+                # calculate moving average G
+                current_g = loss_g.detach().item()
+                if global_step < g_window:
+                    g_list.append(current_g)
+                else:
+                    s = global_step % g_window
+                    g_total -= g_list[s]
+                    g_list[s] = current_g
+                g_total += current_g
+                loss_G = g_total / len(g_list)
+                # calculate combined loss
+                # lmda_s = torch.nn.functional.softplus(lmda).squeeze()
+                loss = unet_loss + lmda * (loss_g - loss_G)
+                if global_step % 50 == 0:
+                    print(f"lmda {lmda.item()}/g {loss_g.item()}/unet {unet_loss.item()}/loss {loss.item()}")
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
