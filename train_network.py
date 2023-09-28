@@ -695,7 +695,7 @@ class NetworkTrainer:
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
         global_step = 0
 
-        prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
+        prediction_type = "v_prediction" if args.alt_prediction_type and args.v_parameterization else "epsilon"
         noise_scheduler = DDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
             timestep_spacing="trailing", prediction_type=prediction_type
@@ -1000,6 +1000,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
+    )
+    parser.add_argument(
+        "--alt_prediction_type",
+        action="store_true",
+        help="set noise scheduler prediction type to v_prediction if v_parameterization is enabled",
     )
     return parser
 
