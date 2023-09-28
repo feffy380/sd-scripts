@@ -110,7 +110,7 @@ import math
 from types import SimpleNamespace
 from typing import Dict, Optional, Tuple, Union
 import torch
-from torch import nn, einsum
+from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 
@@ -139,7 +139,7 @@ UP_BLOCK_TYPES = ["UpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "Cros
 
 # constants
 
-EPSILON = 1e-10
+EPSILON = 1e-6
 
 # helper functions
 
@@ -151,17 +151,17 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+
 # flash attention forwards and backwards
 
-# flash attention v1 - https://arxiv.org/abs/2205.14135
-# flash attention v2 - https://tridao.me/publications/flash2/flash2.pdf
+# https://arxiv.org/abs/2205.14135
 
 
 class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
     @torch.no_grad()
     def forward(ctx, q, k, v, mask, causal, q_bucket_size, k_bucket_size):
-        """ Algorithm 1 in the v2 paper """
+        """Algorithm 2 in the paper"""
 
         device = q.device
         dtype = q.dtype
@@ -172,87 +172,79 @@ class FlashAttentionFunction(torch.autograd.Function):
         all_row_sums = torch.zeros((*q.shape[:-1], 1), dtype=dtype, device=device)
         all_row_maxes = torch.full((*q.shape[:-1], 1), max_neg_value, dtype=dtype, device=device)
 
-        scale = (q.shape[-1] ** -0.5)
-
-        num_row_tiles = math.ceil(q.shape[-2] / q_bucket_size)
-        num_col_tiles = math.ceil(k.shape[-2] / k_bucket_size)
-
-        if exists(mask) and mask.ndim == 2:
-            mask = rearrange(mask, 'b n -> b 1 1 n')
+        scale = q.shape[-1] ** -0.5
 
         if not exists(mask):
-            col_masks = (None,) * num_col_tiles
-            mask = (col_masks,) * num_row_tiles 
+            mask = (None,) * math.ceil(q.shape[-2] / q_bucket_size)
         else:
-            mask = ((mask,) * num_row_tiles) if mask.shape[-2] == 1 else mask.split(q_bucket_size, dim = -2)
-            mask = tuple(((row_mask,) * num_col_tiles) if row_mask.shape[-1] == 1 else row_mask.split(k_bucket_size, dim = -1) for row_mask in mask)
+            mask = rearrange(mask, "b n -> b 1 1 n")
+            mask = mask.split(q_bucket_size, dim=-1)
 
         row_splits = zip(
-            q.split(q_bucket_size, dim = -2),
-            o.split(q_bucket_size, dim = -2),
+            q.split(q_bucket_size, dim=-2),
+            o.split(q_bucket_size, dim=-2),
             mask,
-            all_row_sums.split(q_bucket_size, dim = -2),
-            all_row_maxes.split(q_bucket_size, dim = -2),
+            all_row_sums.split(q_bucket_size, dim=-2),
+            all_row_maxes.split(q_bucket_size, dim=-2),
         )
 
         for ind, (qc, oc, row_mask, row_sums, row_maxes) in enumerate(row_splits):
             q_start_index = ind * q_bucket_size - qk_len_diff
 
             col_splits = zip(
-                k.split(k_bucket_size, dim = -2),
-                v.split(k_bucket_size, dim = -2),
-                row_mask
+                k.split(k_bucket_size, dim=-2),
+                v.split(k_bucket_size, dim=-2),
             )
 
-            for k_ind, (kc, vc, col_mask) in enumerate(col_splits):
+            for k_ind, (kc, vc) in enumerate(col_splits):
                 k_start_index = k_ind * k_bucket_size
 
-                attn_weights = einsum('... i d, ... j d -> ... i j', qc, kc) * scale
+                attn_weights = torch.einsum("... i d, ... j d -> ... i j", qc, kc) * scale
 
-                if exists(col_mask):
-                    attn_weights.masked_fill_(~col_mask, max_neg_value)
+                if exists(row_mask):
+                    attn_weights.masked_fill_(~row_mask, max_neg_value)
 
                 if causal and q_start_index < (k_start_index + k_bucket_size - 1):
-                    causal_mask = torch.ones((qc.shape[-2], kc.shape[-2]), dtype = torch.bool, device = device).triu(q_start_index - k_start_index + 1)
+                    causal_mask = torch.ones((qc.shape[-2], kc.shape[-2]), dtype=torch.bool, device=device).triu(
+                        q_start_index - k_start_index + 1
+                    )
                     attn_weights.masked_fill_(causal_mask, max_neg_value)
 
-                block_row_maxes = attn_weights.amax(dim = -1, keepdims = True)
+                block_row_maxes = attn_weights.amax(dim=-1, keepdims=True)
+                attn_weights -= block_row_maxes
+                exp_weights = torch.exp(attn_weights)
+
+                if exists(row_mask):
+                    exp_weights.masked_fill_(~row_mask, 0.0)
+
+                block_row_sums = exp_weights.sum(dim=-1, keepdims=True).clamp(min=EPSILON)
+
                 new_row_maxes = torch.maximum(block_row_maxes, row_maxes)
 
-                exp_weights = torch.exp(attn_weights - new_row_maxes)
-
-                if exists(col_mask):
-                    exp_weights.masked_fill_(~col_mask, 0.)
-
-                block_row_sums = exp_weights.sum(dim = -1, keepdims = True).clamp(min = EPSILON)
-
-                exp_values = einsum('... i j, ... j d -> ... i d', exp_weights, vc)
+                exp_values = torch.einsum("... i j, ... j d -> ... i d", exp_weights, vc)
 
                 exp_row_max_diff = torch.exp(row_maxes - new_row_maxes)
+                exp_block_row_max_diff = torch.exp(block_row_maxes - new_row_maxes)
 
-                new_row_sums = exp_row_max_diff * row_sums + block_row_sums
+                new_row_sums = exp_row_max_diff * row_sums + exp_block_row_max_diff * block_row_sums
 
-                oc.mul_(exp_row_max_diff).add_(exp_values)
+                oc.mul_((row_sums / new_row_sums) * exp_row_max_diff).add_((exp_block_row_max_diff / new_row_sums) * exp_values)
 
                 row_maxes.copy_(new_row_maxes)
                 row_sums.copy_(new_row_sums)
 
-            oc.div_(row_sums)
-
-        lse = all_row_sums.log().to(dtype=dtype) + all_row_maxes
-
         ctx.args = (causal, scale, mask, q_bucket_size, k_bucket_size)
-        ctx.save_for_backward(q, k, v, o, lse)
+        ctx.save_for_backward(q, k, v, o, all_row_sums, all_row_maxes)
 
         return o
 
     @staticmethod
     @torch.no_grad()
     def backward(ctx, do):
-        """ Algorithm 2 in the v2 paper """
+        """Algorithm 4 in the paper"""
 
         causal, scale, mask, q_bucket_size, k_bucket_size = ctx.args
-        q, k, v, o, lse = ctx.saved_tensors
+        q, k, v, o, l, m = ctx.saved_tensors
 
         device = q.device
 
@@ -264,47 +256,51 @@ class FlashAttentionFunction(torch.autograd.Function):
         dv = torch.zeros_like(v)
 
         row_splits = zip(
-            q.split(q_bucket_size, dim = -2),
-            o.split(q_bucket_size, dim = -2),
-            do.split(q_bucket_size, dim = -2),
+            q.split(q_bucket_size, dim=-2),
+            o.split(q_bucket_size, dim=-2),
+            do.split(q_bucket_size, dim=-2),
             mask,
-            lse.split(q_bucket_size, dim = -2),
-            dq.split(q_bucket_size, dim = -2)
+            l.split(q_bucket_size, dim=-2),
+            m.split(q_bucket_size, dim=-2),
+            dq.split(q_bucket_size, dim=-2),
         )
 
-        for ind, (qc, oc, doc, row_mask, lsec, dqc) in enumerate(row_splits):
+        for ind, (qc, oc, doc, row_mask, lc, mc, dqc) in enumerate(row_splits):
             q_start_index = ind * q_bucket_size - qk_len_diff
 
             col_splits = zip(
-                k.split(k_bucket_size, dim = -2),
-                v.split(k_bucket_size, dim = -2),
-                dk.split(k_bucket_size, dim = -2),
-                dv.split(k_bucket_size, dim = -2),
-                row_mask
+                k.split(k_bucket_size, dim=-2),
+                v.split(k_bucket_size, dim=-2),
+                dk.split(k_bucket_size, dim=-2),
+                dv.split(k_bucket_size, dim=-2),
             )
 
-            for k_ind, (kc, vc, dkc, dvc, col_mask) in enumerate(col_splits):
+            for k_ind, (kc, vc, dkc, dvc) in enumerate(col_splits):
                 k_start_index = k_ind * k_bucket_size
 
-                attn_weights = einsum('... i d, ... j d -> ... i j', qc, kc) * scale
+                attn_weights = torch.einsum("... i d, ... j d -> ... i j", qc, kc) * scale
 
                 if causal and q_start_index < (k_start_index + k_bucket_size - 1):
-                    causal_mask = torch.ones((qc.shape[-2], kc.shape[-2]), dtype = torch.bool, device = device).triu(q_start_index - k_start_index + 1)
+                    causal_mask = torch.ones((qc.shape[-2], kc.shape[-2]), dtype=torch.bool, device=device).triu(
+                        q_start_index - k_start_index + 1
+                    )
                     attn_weights.masked_fill_(causal_mask, max_neg_value)
 
-                p = torch.exp(attn_weights - lsec)
+                exp_attn_weights = torch.exp(attn_weights - mc)
 
-                if exists(col_mask):
-                    p.masked_fill_(~col_mask, 0.)
+                if exists(row_mask):
+                    exp_attn_weights.masked_fill_(~row_mask, 0.0)
 
-                dv_chunk = einsum('... i j, ... i d -> ... j d', p, doc)
-                dp = einsum('... i d, ... j d -> ... i j', doc, vc)
+                p = exp_attn_weights / lc
 
-                D = (doc * oc).sum(dim = -1, keepdims = True)
+                dv_chunk = torch.einsum("... i j, ... i d -> ... j d", p, doc)
+                dp = torch.einsum("... i d, ... j d -> ... i j", doc, vc)
+
+                D = (doc * oc).sum(dim=-1, keepdims=True)
                 ds = p * scale * (dp - D)
 
-                dq_chunk = einsum('... i j, ... j d -> ... i d', ds, kc)
-                dk_chunk = einsum('... i j, ... i d -> ... j d', ds, qc)
+                dq_chunk = torch.einsum("... i j, ... j d -> ... i d", ds, kc)
+                dk_chunk = torch.einsum("... i j, ... i d -> ... j d", ds, qc)
 
                 dqc.add_(dq_chunk)
                 dkc.add_(dk_chunk)
