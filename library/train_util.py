@@ -696,10 +696,15 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenizer = self.tokenizers[0]
 
         input_ids = tokenizer(
-            caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
+            caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
         ).input_ids
+        return input_ids
 
-        if self.tokenizer_max_length > tokenizer.model_max_length:
+    def chunk_input_ids(self, input_ids, tokenizer=None):
+        if tokenizer is None:
+            tokenizer = self.tokenizers[0]
+
+        if input_ids.size()[-1] > tokenizer.model_max_length:
             input_ids = input_ids.squeeze(0)
             iids_list = []
             if tokenizer.pad_token_id == tokenizer.eos_token_id:
@@ -707,7 +712,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
                 # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
                 for i in range(
-                    1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
+                    1, input_ids.size()[-1] - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
                 ):  # (1, 152, 75)
                     ids_chunk = (
                         input_ids[0].unsqueeze(0),
@@ -739,6 +744,23 @@ class BaseDataset(torch.utils.data.Dataset):
 
             input_ids = torch.stack(iids_list)  # 3,77
         return input_ids
+
+    def pad_batch_tokens(self, input_ids_list, tokenizer):
+        # pad input_ids to longest in batch
+        input_ids_list = [i.squeeze(0) for i in input_ids_list]
+        max_standard_tokens = tokenizer.model_max_length - 2
+        max_len = max(i.size()[-1] for i in input_ids_list) - 2
+        num_chunks = max(math.ceil(max_len / max_standard_tokens), 1)
+        len_input = max_standard_tokens * num_chunks + 2
+
+        input_ids_list = tokenizer.pad(
+            {"input_ids": input_ids_list},
+            padding="max_length",
+            max_length=len_input,
+            return_tensors="pt"
+        ).input_ids
+        input_ids_list = [self.chunk_input_ids(input_ids, tokenizer) for input_ids in input_ids_list]
+        return torch.stack(input_ids_list)
 
     def register_image(self, info: ImageInfo, subset: BaseSubset):
         self.image_data[info.image_key] = info
@@ -1214,8 +1236,8 @@ class BaseDataset(torch.utils.data.Dataset):
                 else:
                     example["input_ids2"] = None
             else:
-                example["input_ids"] = torch.stack(input_ids_list)
-                example["input_ids2"] = torch.stack(input_ids2_list) if len(self.tokenizers) > 1 else None
+                example["input_ids"] = self.pad_batch_tokens(input_ids_list, self.tokenizers[0])
+                example["input_ids2"] = self.pad_batch_tokens(input_ids2_list, self.tokenizers[0]) if len(self.tokenizers) > 1 else None
             example["text_encoder_outputs1_list"] = None
             example["text_encoder_outputs2_list"] = None
             example["text_encoder_pool2_list"] = None
@@ -2810,7 +2832,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--max_token_length",
         type=int,
         default=None,
-        choices=[None, 150, 225],
+        # choices=[None, 150, 225],
         help="max token length of text encoder (default for 75, 150 or 225) / text encoderのトークンの最大長（未指定で75、150または225が指定可）",
     )
     parser.add_argument(
@@ -3963,7 +3985,7 @@ def get_hidden_states(args: argparse.Namespace, input_ids, tokenizer, text_encod
         else:
             # v1: <BOS>...<EOS> の三連を <BOS>...<EOS> へ戻す
             states_list = [encoder_hidden_states[:, 0].unsqueeze(1)]  # <BOS>
-            for i in range(1, args.max_token_length, tokenizer.model_max_length):
+            for i in range(1, encoder_hidden_states.shape[1], tokenizer.model_max_length):
                 states_list.append(encoder_hidden_states[:, i : i + tokenizer.model_max_length - 2])  # <BOS> の後から <EOS> の前まで
             states_list.append(encoder_hidden_states[:, -1].unsqueeze(1))  # <EOS>
             encoder_hidden_states = torch.cat(states_list, dim=1)
