@@ -938,10 +938,42 @@ class BaseDataset(torch.utils.data.Dataset):
         if cache_to_disk and not is_main_process:  # if cache to disk, don't cache latents in non-main process, set to info only
             return
 
+        class ImageDataset(torch.utils.data.Dataset):
+            def __init__(self, batches, random_crop):
+                self.batches = batches
+                self.random_crop = random_crop
+
+            def __len__(self):
+                return len(self.batches)
+
+            def __getitem__(self, idx):
+                image_infos = self.batches[idx]
+                images = []
+                for info in image_infos:
+                    image = load_image(info.absolute_path) if info.image is None else np.array(info.image, np.uint8)
+                    # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
+                    image, original_size, crop_ltrb = trim_and_resize_if_required(self.random_crop, image, info.bucket_reso, info.resized_size)
+                    image = IMAGE_TRANSFORMS(image)
+                    images.append(image)
+
+                    info.latents_original_size = original_size
+                    info.latents_crop_ltrb = crop_ltrb
+
+                img_tensors = torch.stack(images, dim=0)
+                return image_infos, img_tensors
+
+        def custom_collate(batch):
+            return batch
+
         # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
         print("caching latents...")
-        for batch in tqdm(batches, smoothing=1, total=len(batches)):
-            cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
+        # for batch in tqdm(batches, smoothing=1, total=len(batches)):
+        #     cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
+        image_dataset = ImageDataset(batches, subset.random_crop)
+        image_dataloader = torch.utils.data.DataLoader(image_dataset, shuffle=False, num_workers=8, collate_fn=custom_collate)
+        for batch in tqdm(image_dataloader, smoothing=1, total=len(image_dataloader)):
+            infos, img_tensors = batch[0]
+            cache_batch_latents(vae, cache_to_disk, infos, img_tensors, subset.flip_aug)
 
     # weight_dtypeを指定するとText Encoderそのもの、およひ出力がweight_dtypeになる
     # SDXLでのみ有効だが、datasetのメソッドとする必要があるので、sdxl_train_util.pyではなくこちらに実装する
@@ -2211,7 +2243,7 @@ def trim_and_resize_if_required(
 
 
 def cache_batch_latents(
-    vae: AutoencoderKL, cache_to_disk: bool, image_infos: List[ImageInfo], flip_aug: bool, random_crop: bool
+    vae: AutoencoderKL, cache_to_disk: bool, image_infos: List[ImageInfo], img_tensors: torch.Tensor, flip_aug: bool
 ) -> None:
     r"""
     requires image_infos to have: absolute_path, bucket_reso, resized_size, latents_npz
@@ -2222,20 +2254,7 @@ def cache_batch_latents(
         latents_flipped is also set if flip_aug is True
     latents_original_size and latents_crop_ltrb are also set
     """
-    images = []
-    for info in image_infos:
-        image = load_image(info.absolute_path) if info.image is None else np.array(info.image, np.uint8)
-        # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-        image, original_size, crop_ltrb = trim_and_resize_if_required(random_crop, image, info.bucket_reso, info.resized_size)
-        image = IMAGE_TRANSFORMS(image)
-        images.append(image)
-
-        info.latents_original_size = original_size
-        info.latents_crop_ltrb = crop_ltrb
-
-    img_tensors = torch.stack(images, dim=0)
     img_tensors = img_tensors.to(device=vae.device, dtype=vae.dtype)
-
     with torch.no_grad():
         latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
 
