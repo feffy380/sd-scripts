@@ -10,11 +10,7 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
         return
 
     alphas_cumprod = noise_scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
-    sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
-    alpha = sqrt_alphas_cumprod
-    sigma = sqrt_one_minus_alphas_cumprod
-    all_snr = (alpha / sigma) ** 2
+    all_snr = alphas_cumprod / (1.0 - alphas_cumprod)
 
     noise_scheduler.all_snr = all_snr.to(device)
 
@@ -57,18 +53,21 @@ def fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler):
     noise_scheduler.alphas_cumprod = alphas_cumprod
 
 
-def apply_snr_weight(loss, timesteps, noise_scheduler, gamma, v_prediction):
+def apply_snr_weight(loss, timesteps, noise_scheduler, gamma, v_prediction, zsnr):
     snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
-    # gamma_over_snr = torch.div(torch.ones_like(snr) * gamma, snr)
-    # snr_weight = torch.minimum(gamma_over_snr, torch.ones_like(gamma_over_snr)).float().to(loss.device)  # from paper
-
-    # EXPERIMENTAL: attempted fix for v-prediction
     if v_prediction:
-        min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
-        snr_weight = torch.div(min_snr_gamma, snr+1).float().to(loss.device)
-    else:
-        gamma_over_snr = torch.div(torch.full_like(snr, gamma), snr)
-        snr_weight = torch.minimum(gamma_over_snr, torch.ones_like(gamma_over_snr)).float().to(loss.device)  # from paper
+        # Velocity objective requires that we add one to SNR values before we divide by them.
+        snr = snr + 1
+    min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
+    snr_weight = torch.div(min_snr_gamma, snr).float().to(loss.device)
+
+    # if v_prediction:
+    #     snr_weight = torch.div(min_snr_gamma, snr+1).float().to(loss.device)
+    #     # TODO: drhead's epsilon to avoid 0 weight
+    #     # if zsnr:
+    #     #     snr_weight = snr_weight + 1e-3 * (1 - snr_weight)
+    # else:
+    #     snr_weight = torch.div(min_snr_gamma, snr).float().to(loss.device)
 
     loss = loss * snr_weight
     return loss
@@ -95,10 +94,17 @@ def add_v_prediction_like_loss(loss, timesteps, noise_scheduler, v_pred_like_los
     loss = loss + loss / scale * v_pred_like_loss
     return loss
 
-def apply_debiased_estimation(loss, timesteps, noise_scheduler):
+def apply_debiased_estimation(loss, timesteps, noise_scheduler, v_prediction):
     snr_t = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])  # batch_size
-    snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
-    weight = 1/torch.sqrt(snr_t)
+    # snr_t = torch.minimum(snr_t, torch.ones_like(snr_t) * 1000)  # if timestep is 0, snr_t is inf, so limit it to 1000
+    if v_prediction:
+        # weight = torch.sqrt(snr_t)/(snr_t + 1)
+        # weight = torch.sqrt(snr_t)/(snr_t+1)**2
+        # weight = 1 / torch.sqrt(snr_t + 1)
+        # weight = torch.sqrt(snr_t) / (snr_t + 1)**4
+        weight = 1 / (snr_t + 1)
+    else:
+        weight = 1/torch.sqrt(snr_t)
     loss = weight * loss
     return loss
 
