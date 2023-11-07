@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 from accelerate.utils import set_seed
-from diffusers import DDPMScheduler, DDIMScheduler
+from diffusers import DDPMScheduler
 from library import model_util
 
 import library.train_util as train_util
@@ -696,15 +696,16 @@ class NetworkTrainer:
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
         global_step = 0
 
+        prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
         noise_scheduler = DDPMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
             timestep_spacing="trailing",
-            # set_alpha_to_one=False, steps_offset=1,
-            # rescale_betas_zero_snr=args.zero_terminal_snr,
+            prediction_type=prediction_type,
         )
+        # NOTE: wrong order but empirically min-snr performs better with the unscaled SNR schedule
+        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
         if args.zero_terminal_snr:
             custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
-        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
 
         if accelerator.is_main_process:
             init_kwargs = {}
@@ -816,13 +817,13 @@ class NetworkTrainer:
                     loss = loss * loss_weights
 
                     if args.min_snr_gamma:
-                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization, args.zero_terminal_snr)
+                        loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma)
                     if args.scale_v_pred_loss_like_noise_pred:
                         loss = scale_v_prediction_loss_like_noise_prediction(loss, timesteps, noise_scheduler)
                     if args.v_pred_like_loss:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
-                        loss = apply_debiased_estimation(loss, timesteps, noise_scheduler, args.v_parameterization)
+                        loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
