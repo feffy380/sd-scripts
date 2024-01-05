@@ -341,6 +341,17 @@ class NetworkTrainer:
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
+        # Uncertainty-based multi-task loss weighting https://arxiv.org/pdf/2312.02696.pdf
+        multi_task_weights = torch.nn.Parameter(torch.zeros(1000).to(device=accelerator.device))
+        optimizer.add_param_group({
+            "params": multi_task_weights,
+        })
+
+        def apply_multi_task_weight(loss, timesteps, multi_task_weights):
+            weights = multi_task_weights[timesteps]
+            loss = loss / torch.exp(weights) + weights
+            return loss
+
         # dataloaderを準備する
         # DataLoaderのプロセス数：0はメインプロセスになる
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)  # cpu_count-1 ただし最大で指定された数まで
@@ -748,6 +759,8 @@ class NetworkTrainer:
                 accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
                 os.remove(old_ckpt_file)
 
+        orig_ip_noise_gamma = args.ip_noise_gamma
+
         # training loop
         for epoch in range(num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -792,6 +805,9 @@ class NetworkTrainer:
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
 
+                    # decay ip_noise_gamma
+                    # args.ip_noise_gamma = orig_ip_noise_gamma / 2 * (1 + math.cos(global_step / args.max_train_steps * math.pi))
+
                     # Sample noise, sample a random timestep for each image, and add noise to the latents,
                     # with noise offset and/or multires noise if specified
                     noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(
@@ -824,6 +840,7 @@ class NetworkTrainer:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
+                    loss = apply_multi_task_weight(loss, timesteps, multi_task_weights)
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 

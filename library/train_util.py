@@ -696,7 +696,8 @@ class BaseDataset(torch.utils.data.Dataset):
             tokenizer = self.tokenizers[0]
 
         input_ids = tokenizer(
-            caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"
+            caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # infinite token mod
+            # caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # default. always pad to token limit
         ).input_ids
         return input_ids
 
@@ -3037,7 +3038,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=int,
         default=1000,
         help=(
-            "When using `--timestep_bias_strategy=range`, the final timestep (inclusive) to bias."
+            "When using `--timestep_bias_strategy=range`, the final timestep (exclusive) to bias."
             " Defaults to 1000, which is the number of timesteps that Stable Diffusion is trained on."
         ),
     )
@@ -3595,7 +3596,7 @@ def get_optimizer(args, trainable_params):
         actual_lr = lr
         lr_count = 1
         if type(trainable_params) == list and type(trainable_params[0]) == dict:
-            lrs = set()
+            lrs = {actual_lr}
             actual_lr = trainable_params[0].get("lr", actual_lr)
             for group in trainable_params:
                 lrs.add(group.get("lr", actual_lr))
@@ -3607,9 +3608,19 @@ def get_optimizer(args, trainable_params):
             )
             print("recommend option: lr=1.0 / 推奨は1.0です")
         if lr_count > 1:
-            print(
-                f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
-            )
+            if optimizer_type == "prodigy":
+                print("applying layer_scale for prodigy")
+                # set learning rates to 1.0 and use layer_scale instead
+                for param in trainable_params:
+                    if "lr" in param:
+                        param["layer_scale"] = param["lr"]
+                        if param["lr"] > 0.0:
+                            # use layer_scale instead of lr unless it's 0.0 to disable training
+                            del param["lr"]
+            else:
+                print(
+                    f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
+                )
 
         if optimizer_type.startswith("DAdapt".lower()):
             # DAdaptation family
