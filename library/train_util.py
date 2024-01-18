@@ -746,9 +746,37 @@ class BaseDataset(torch.utils.data.Dataset):
             input_ids = torch.stack(iids_list)  # 3,77
         return input_ids
 
+    # insert padding so input_ids are split at the nearest comma token (v1.x only)
+    def pad_to_comma_token(self, input_ids, tokenizer):
+        # get comma token
+        comma_token = tokenizer(",", add_special_tokens=False, return_tensors="pt").input_ids.squeeze()
+        # find comma indices
+        comma_indices = (input_ids == comma_token).nonzero(as_tuple=True)[0].tolist()
+        chunk_size = tokenizer.model_max_length - 2
+        iids_list = [input_ids[0].unsqueeze(0)]  # start with BOS token
+        # loop over indices to build chunks (ignore BOS and EOS)
+        comma_indices.append(input_ids.size(0) - 2)  # virtual end comma
+        prev_comma = 0
+        for i in range(len(comma_indices)):
+            # find last comma before chunk_length
+            if (i+1 < len(comma_indices)) and (comma_indices[i+1] - prev_comma <= chunk_size):
+                continue
+            ids_chunk = input_ids[prev_comma+1 : comma_indices[i]+1]
+            # pad with tokenizer.pad_token_id up to chunk length
+            if ids_chunk.size(0) < chunk_size:
+                ids_chunk = torch.cat((
+                    ids_chunk,
+                    torch.full((chunk_size - ids_chunk.size(0),), tokenizer.pad_token_id)
+                ))
+            iids_list.append(ids_chunk)
+            prev_comma = comma_indices[i]
+        # concat chunks and append EOS token
+        input_ids = torch.cat(iids_list + [input_ids[-1].unsqueeze(0)])
+        return input_ids
+
     def pad_batch_tokens(self, input_ids_list, tokenizer):
         # pad input_ids to longest in batch
-        input_ids_list = [i.squeeze(0) for i in input_ids_list]
+        input_ids_list = [self.pad_to_comma_token(i.squeeze(0), tokenizer) for i in input_ids_list]
         max_standard_tokens = tokenizer.model_max_length - 2
         max_len = max(i.size()[-1] for i in input_ids_list) - 2
         num_chunks = max(math.ceil(max_len / max_standard_tokens), 1)
@@ -1985,7 +2013,10 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
     if not os.path.exists(npz_path):
         return False
 
-    npz = np.load(npz_path)
+    try:
+        npz = np.load(npz_path)
+    except:
+        return False
     if "latents" not in npz or "original_size" not in npz or "crop_ltrb" not in npz:  # old ver?
         return False
     if npz["latents"].shape[1:3] != expected_latents_size:
