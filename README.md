@@ -249,39 +249,43 @@ ControlNet-LLLite, a novel method for ControlNet with SDXL, is added. See [docum
 
 ## Change History
 
-### Nov 5, 2023 / 2023/11/5
+### Jan 17, 2024 / 2024/1/17: v0.8.1
 
-- `sdxl_train.py` now supports different learning rates for each Text Encoder.
-  - Example:
-    - `--learning_rate 1e-6`: train U-Net only
-    - `--train_text_encoder --learning_rate 1e-6`: train U-Net and two Text Encoders with the same learning rate (same as the previous version)
-    - `--train_text_encoder --learning_rate 1e-6 --learning_rate_te1 1e-6 --learning_rate_te2 1e-6`: train U-Net and two Text Encoders with the different learning rates
-    - `--train_text_encoder --learning_rate 0 --learning_rate_te1 1e-6 --learning_rate_te2 1e-6`: train two Text Encoders only 
-    - `--train_text_encoder --learning_rate 1e-6 --learning_rate_te1 1e-6 --learning_rate_te2 0`: train U-Net and one Text Encoder only
-    - `--train_text_encoder --learning_rate 0 --learning_rate_te1 0 --learning_rate_te2 1e-6`: train one Text Encoder only
+- Fixed a bug that the VRAM usage without Text Encoder training is larger than before in training scripts for LoRA etc (`train_network.py`, `sdxl_train_network.py`).
+  - Text Encoders were not moved to CPU.
+- Fixed typos. Thanks to akx! [PR #1053](https://github.com/kohya-ss/sd-scripts/pull/1053)
 
-- `train_db.py` and `fine_tune.py` now support different learning rates for Text Encoder. Specify with `--learning_rate_te` option. 
-  - To train Text Encoder with `fine_tune.py`, specify `--train_text_encoder` option too. `train_db.py` trains Text Encoder by default.
+- LoRA 等の学習スクリプト（`train_network.py`、`sdxl_train_network.py`）で、Text Encoder を学習しない場合の VRAM 使用量が以前に比べて大きくなっていた不具合を修正しました。 
+  - Text Encoder が GPU に保持されたままになっていました。
+- 誤字が修正されました。 [PR #1053](https://github.com/kohya-ss/sd-scripts/pull/1053) akx 氏に感謝します。
 
-- Fixed the bug that Text Encoder is not trained when block lr is specified in `sdxl_train.py`.
+### Jan 15, 2024 / 2024/1/15: v0.8.0
 
-- Debiased Estimation loss is added to each training script. Thanks to sdbds! 
-  - See PR [#889](https://github.com/kohya-ss/sd-scripts/pull/889) for details.
-- Training of Text Encoder is improved in `train_network.py` and `sdxl_train_network.py`. Thanks to KohakuBlueleaf! PR [#895](https://github.com/kohya-ss/sd-scripts/pull/895)
-- The moving average of the loss is now displayed in the progress bar in each training script. Thanks to shirayu! PR [#899](https://github.com/kohya-ss/sd-scripts/pull/899)
-- PagedAdamW32bit optimizer is supported. Specify `--optimizer_type=PagedAdamW32bit`. Thanks to xzuyn! PR [#900](https://github.com/kohya-ss/sd-scripts/pull/900)
-- Other bug fixes and improvements.
+- Diffusers, Accelerate, Transformers and other related libraries have been updated. Please update the libraries with [Upgrade](#upgrade).
+  - Some model files (Text Encoder without position_id) based on the latest Transformers can be loaded.
+- `torch.compile` is supported (experimental). PR [#1024](https://github.com/kohya-ss/sd-scripts/pull/1024) Thanks to p1atdev!
+  - This feature works only on Linux or WSL.
+  - Please specify `--torch_compile` option in each training script.
+  - You can select the backend with `--dynamo_backend` option. The default is `"inductor"`. `inductor` or `eager` seems to work.
+  - Please use `--sdpa` option instead of `--xformers` option.
+  - PyTorch 2.1 or later is recommended.
+  - Please see [PR](https://github.com/kohya-ss/sd-scripts/pull/1024) for details.
+- The session name for wandb can be specified with `--wandb_run_name` option. PR [#1032](https://github.com/kohya-ss/sd-scripts/pull/1032) Thanks to hopl1t!
+- IPEX library is updated. PR [#1030](https://github.com/kohya-ss/sd-scripts/pull/1030) Thanks to Disty0!
+- Fixed a bug that Diffusers format model cannot be saved.
 
-- `sdxl_train.py` で、二つのText Encoderそれぞれに独立した学習率が指定できるようになりました。サンプルは上の英語版を参照してください。
-- `train_db.py` および `fine_tune.py` で Text Encoder に別の学習率を指定できるようになりました。`--learning_rate_te` オプションで指定してください。
-  - `fine_tune.py` で Text Encoder を学習するには `--train_text_encoder` オプションをあわせて指定してください。`train_db.py` はデフォルトで学習します。
-- `sdxl_train.py` で block lr を指定すると Text Encoder が学習されない不具合を修正しました。
-- Debiased Estimation loss が各学習スクリプトに追加されました。sdbsd 氏に感謝します。
-  - 詳細は PR [#889](https://github.com/kohya-ss/sd-scripts/pull/889) を参照してください。
-- `train_network.py` と `sdxl_train_network.py` でText Encoderの学習が改善されました。KohakuBlueleaf 氏に感謝します。 PR [#895](https://github.com/kohya-ss/sd-scripts/pull/895)
-- 各学習スクリプトで移動平均のlossがプログレスバーに表示されるようになりました。shirayu 氏に感謝します。 PR [#899](https://github.com/kohya-ss/sd-scripts/pull/899)
-- PagedAdamW32bit オプティマイザがサポートされました。`--optimizer_type=PagedAdamW32bit` と指定してください。xzuyn 氏に感謝します。 PR [#900](https://github.com/kohya-ss/sd-scripts/pull/900)
-- その他のバグ修正と改善。
+- Diffusers、Accelerate、Transformers 等の関連ライブラリを更新しました。[Upgrade](#upgrade) を参照し更新をお願いします。
+  - 最新の Transformers を前提とした一部のモデルファイル（Text Encoder が position_id を持たないもの）が読み込めるようになりました。
+- `torch.compile` がサポートされしました（実験的）。 PR [#1024](https://github.com/kohya-ss/sd-scripts/pull/1024) p1atdev 氏に感謝します。
+  - Linux または WSL でのみ動作します。
+  - 各学習スクリプトで `--torch_compile` オプションを指定してください。
+  - `--dynamo_backend` オプションで使用される backend を選択できます。デフォルトは `"inductor"` です。 `inductor` または `eager` が動作するようです。
+  - `--xformers` オプションとは互換性がありません。 代わりに `--sdpa` オプションを使用してください。
+  - PyTorch 2.1以降を推奨します。
+  - 詳細は [PR](https://github.com/kohya-ss/sd-scripts/pull/1024) をご覧ください。
+- wandb 保存時のセッション名が各学習スクリプトの `--wandb_run_name` オプションで指定できるようになりました。 PR [#1032](https://github.com/kohya-ss/sd-scripts/pull/1032) hopl1t 氏に感謝します。
+- IPEX ライブラリが更新されました。[PR #1030](https://github.com/kohya-ss/sd-scripts/pull/1030) Disty0 氏に感謝します。
+- Diffusers 形式でのモデル保存ができなくなっていた不具合を修正しました。
 
 
 Please read [Releases](https://github.com/kohya-ss/sd-scripts/releases) for recent updates.

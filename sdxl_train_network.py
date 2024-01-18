@@ -1,9 +1,12 @@
 import argparse
 import torch
+
 try:
     import intel_extension_for_pytorch as ipex
+
     if torch.xpu.is_available():
         from library.ipex import ipex_init
+
         ipex_init()
 except Exception:
     pass
@@ -92,8 +95,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 unet.to(org_unet_device)
         else:
             # Text Encoderから毎回出力を取得するので、GPUに乗せておく
-            text_encoders[0].to(accelerator.device)
-            text_encoders[1].to(accelerator.device)
+            text_encoders[0].to(accelerator.device, dtype=weight_dtype)
+            text_encoders[1].to(accelerator.device, dtype=weight_dtype)
 
     def get_text_cond(self, args, accelerator, batch, tokenizers, text_encoders, weight_dtype):
         if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
@@ -123,6 +126,7 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                     text_encoders[0],
                     text_encoders[1],
                     None if not args.full_fp16 else weight_dtype,
+                    accelerator=accelerator,
                 )
         else:
             encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
