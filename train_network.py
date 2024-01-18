@@ -341,16 +341,16 @@ class NetworkTrainer:
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
-        # Uncertainty-based multi-task loss weighting https://arxiv.org/pdf/2312.02696.pdf
-        multi_task_weights = torch.nn.Parameter(torch.zeros(1000).to(device=accelerator.device))
-        optimizer.add_param_group({
-            "params": multi_task_weights,
-        })
+        # # Uncertainty-based multi-task loss weighting https://arxiv.org/pdf/2312.02696.pdf
+        # multi_task_weights = torch.nn.Parameter(torch.zeros(1000).to(device=accelerator.device))
+        # optimizer.add_param_group({
+        #     "params": multi_task_weights,
+        # })
 
-        def apply_multi_task_weight(loss, timesteps, multi_task_weights):
-            weights = multi_task_weights[timesteps]
-            loss = loss / torch.exp(weights) + weights
-            return loss
+        # def apply_multi_task_weight(loss, timesteps, multi_task_weights):
+        #     weights = multi_task_weights[timesteps]
+        #     loss = loss / torch.exp(weights) + weights
+        #     return loss
 
         # dataloaderを準備する
         # DataLoaderのプロセス数：0はメインプロセスになる
@@ -482,6 +482,10 @@ class NetworkTrainer:
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
+        start_epoch = 0
+        if args.resume:
+            assert "state" in args.resume
+            start_epoch = int(args.resume.split("-")[-2])
 
         # 学習する
         # TODO: find a way to handle total batch size when there are multiple datasets
@@ -704,8 +708,9 @@ class NetworkTrainer:
             if key in metadata:
                 minimum_metadata[key] = metadata[key]
 
-        progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
-        global_step = 0
+        start_step = start_epoch * num_update_steps_per_epoch
+        progress_bar = tqdm(range(start_step, args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
+        global_step = start_step
 
         prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
         noise_scheduler = DDPMScheduler(
@@ -714,9 +719,9 @@ class NetworkTrainer:
             prediction_type=prediction_type,
         )
         # NOTE: wrong order but empirically min-snr performs better with the unscaled SNR schedule
-        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
         if args.zero_terminal_snr:
             custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
+        prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
 
         if accelerator.is_main_process:
             init_kwargs = {}
@@ -762,7 +767,7 @@ class NetworkTrainer:
         orig_ip_noise_gamma = args.ip_noise_gamma
 
         # training loop
-        for epoch in range(num_train_epochs):
+        for epoch in range(start_epoch, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
 
@@ -840,7 +845,8 @@ class NetworkTrainer:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
-                    loss = apply_multi_task_weight(loss, timesteps, multi_task_weights)
+                    raw_loss = loss.mean()
+                    # loss = apply_multi_task_weight(loss, timesteps, multi_task_weights)
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
@@ -883,8 +889,9 @@ class NetworkTrainer:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
 
-                current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+                # current_loss = loss.detach().item()
+                current_loss = raw_loss.detach().item()
+                loss_recorder.add(epoch=epoch-start_epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
                 progress_bar.set_postfix(**logs)
