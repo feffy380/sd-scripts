@@ -2833,6 +2833,11 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         default=1,
         help="Polynomial power for polynomial scheduler / polynomialスケジューラでのpolynomial power",
     )
+    parser.add_argument(
+        "--mechanize",
+        action="store_true",
+        help="Control learning rate automatically with Mechanic. Recommended to set learning rates to 1.0",
+    )
 
 
 def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: bool):
@@ -3625,7 +3630,6 @@ def get_optimizer(args, trainable_params):
             raise ImportError("No lion_pytorch / lion_pytorch がインストールされていないようです")
         print(f"use Lion optimizer | {optimizer_kwargs}")
         optimizer_class = lion_pytorch.Lion
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type.endswith("8bit".lower()):
         try:
@@ -3636,7 +3640,6 @@ def get_optimizer(args, trainable_params):
         if optimizer_type == "AdamW8bit".lower():
             print(f"use 8-bit AdamW optimizer | {optimizer_kwargs}")
             optimizer_class = bnb.optim.AdamW8bit
-            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
         elif optimizer_type == "SGDNesterov8bit".lower():
             print(f"use 8-bit SGD with Nesterov optimizer | {optimizer_kwargs}")
@@ -3645,9 +3648,9 @@ def get_optimizer(args, trainable_params):
                     f"8-bit SGD with Nesterov must be with momentum, set momentum to 0.9 / 8-bit SGD with Nesterovはmomentum指定が必須のため0.9に設定します"
                 )
                 optimizer_kwargs["momentum"] = 0.9
+            optimizer_kwargs["nesterov"] = True
 
             optimizer_class = bnb.optim.SGD8bit
-            optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
 
         elif optimizer_type == "Lion8bit".lower():
             print(f"use 8-bit Lion optimizer | {optimizer_kwargs}")
@@ -3674,8 +3677,6 @@ def get_optimizer(args, trainable_params):
                     "No PagedLion8bit. The version of bitsandbytes installed seems to be old. Please install 0.39.0 or later. / PagedLion8bitが定義されていません。インストールされているbitsandbytesのバージョンが古いようです。0.39.0以上をインストールしてください"
                 )
 
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-
     elif optimizer_type == "PagedAdamW".lower():
         print(f"use PagedAdamW optimizer | {optimizer_kwargs}")
         try:
@@ -3688,7 +3689,6 @@ def get_optimizer(args, trainable_params):
             raise AttributeError(
                 "No PagedAdamW. The version of bitsandbytes installed seems to be old. Please install 0.39.0 or later. / PagedAdamWが定義されていません。インストールされているbitsandbytesのバージョンが古いようです。0.39.0以上をインストールしてください"
             )
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "PagedAdamW32bit".lower():
         print(f"use 32-bit PagedAdamW optimizer | {optimizer_kwargs}")
@@ -3702,16 +3702,15 @@ def get_optimizer(args, trainable_params):
             raise AttributeError(
                 "No PagedAdamW32bit. The version of bitsandbytes installed seems to be old. Please install 0.39.0 or later. / PagedAdamW32bitが定義されていません。インストールされているbitsandbytesのバージョンが古いようです。0.39.0以上をインストールしてください"
             )
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "SGDNesterov".lower():
         print(f"use SGD with Nesterov optimizer | {optimizer_kwargs}")
         if "momentum" not in optimizer_kwargs:
             print(f"SGD with Nesterov must be with momentum, set momentum to 0.9 / SGD with Nesterovはmomentum指定が必須のため0.9に設定します")
             optimizer_kwargs["momentum"] = 0.9
+        optimizer_kwargs["nesterov"] = True
 
         optimizer_class = torch.optim.SGD
-        optimizer = optimizer_class(trainable_params, lr=lr, nesterov=True, **optimizer_kwargs)
 
     elif optimizer_type.startswith("DAdapt".lower()) or optimizer_type == "Prodigy".lower():
         # check lr and lr_count, and print warning
@@ -3778,7 +3777,6 @@ def get_optimizer(args, trainable_params):
             else:
                 raise ValueError(f"Unknown optimizer type: {optimizer_type}")
 
-            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
         else:
             # Prodigy
             # check Prodigy is installed
@@ -3789,7 +3787,6 @@ def get_optimizer(args, trainable_params):
 
             print(f"use Prodigy optimizer | {optimizer_kwargs}")
             optimizer_class = prodigyopt.Prodigy
-            optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "Adafactor".lower():
         # 引数を確認して適宜補正する
@@ -3835,12 +3832,10 @@ def get_optimizer(args, trainable_params):
                 print(f"clip_threshold=1.0 will be good / clip_thresholdは1.0が良いかもしれません")
 
         optimizer_class = transformers.optimization.Adafactor
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "AdamW".lower():
         print(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     if optimizer is None:
         # 任意のoptimizerを使う
@@ -3854,6 +3849,10 @@ def get_optimizer(args, trainable_params):
             optimizer_type = values[-1]
 
         optimizer_class = getattr(optimizer_module, optimizer_type)
+
+    if args.mechanize:
+        from mechanic_pytorch import mechanize
+        optimizer_class = mechanize(optimizer_class)
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__

@@ -76,6 +76,10 @@ class NetworkTrainer:
                 logs["lr/d*lr"] = (
                     lr_scheduler.optimizers[-1].param_groups[0]["d"] * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
                 )
+            elif args.mechanize:
+                logs["lr/s*lr"] = (
+                    torch.sum(lr_scheduler.optimizers[-1].state["_mechanic"]["s"]).item() * lr_scheduler.optimizers[-1].param_groups[0]["lr"]
+                )
         else:
             idx = 0
             if not args.network_train_unet_only:
@@ -87,6 +91,10 @@ class NetworkTrainer:
                 if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower() == "Prodigy".lower():
                     logs[f"lr/d*lr/group{i}"] = (
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
+                    )
+                elif args.mechanize:
+                    logs[f"lr/s*lr/group{i}"] = (
+                        torch.sum(lr_scheduler.optimizers[-1].state["_mechanic"]["s"]).item() * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
 
         return logs
