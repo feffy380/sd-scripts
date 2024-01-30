@@ -3622,7 +3622,7 @@ def get_optimizer(args, trainable_params):
     # print("optkwargs:", optimizer_kwargs)
 
     lr = args.learning_rate
-    optimizer = None
+    optimizer_class = None
 
     if optimizer_type == "Lion".lower():
         try:
@@ -3838,7 +3838,7 @@ def get_optimizer(args, trainable_params):
         print(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW
 
-    if optimizer is None:
+    if optimizer_class is None:
         # 任意のoptimizerを使う
         optimizer_type = args.optimizer_type  # lowerでないやつ（微妙）
         print(f"use {optimizer_type} | {optimizer_kwargs}")
@@ -3854,7 +3854,8 @@ def get_optimizer(args, trainable_params):
     if args.mechanize:
         from mechanic_pytorch import mechanize
         optimizer_class = mechanize(optimizer_class)
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__
     optimizer_args = ",".join([f"{k}={v}" for k, v in optimizer_kwargs.items()])
