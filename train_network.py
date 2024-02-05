@@ -707,7 +707,7 @@ class NetworkTrainer:
                 minimum_metadata[key] = metadata[key]
 
         start_step = start_epoch * num_update_steps_per_epoch
-        progress_bar = tqdm(range(start_step, args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
+        progress_bar = tqdm(range(start_step, args.max_train_steps), smoothing=0.01, disable=not accelerator.is_local_main_process, desc="steps")
         global_step = start_step
 
         prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
