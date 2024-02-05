@@ -1031,7 +1031,7 @@ class BaseDataset(torch.utils.data.Dataset):
         #     cache_batch_latents(vae, cache_to_disk, batch, subset.flip_aug, subset.random_crop)
         image_dataset = ImageDataset(batches, subset.random_crop)
         image_dataloader = torch.utils.data.DataLoader(image_dataset, shuffle=False, num_workers=8, collate_fn=custom_collate)
-        for batch in tqdm(image_dataloader, smoothing=1, total=len(image_dataloader)):
+        for batch in tqdm(image_dataloader, smoothing=0.01, total=len(image_dataloader)):
             infos, img_tensors = batch[0]
             cache_batch_latents(vae, cache_to_disk, infos, img_tensors, subset.flip_aug)
 
