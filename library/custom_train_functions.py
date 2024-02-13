@@ -11,6 +11,8 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
 
     alphas_cumprod = noise_scheduler.alphas_cumprod
     all_snr = alphas_cumprod / (1.0 - alphas_cumprod)
+    # avoid division by zero
+    all_snr[-1] = 4.8973451890853435e-08
 
     noise_scheduler.all_snr = all_snr.to(device)
 
