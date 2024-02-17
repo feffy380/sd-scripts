@@ -2823,7 +2823,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--lr_warmup_steps",
-        type=int,
+        type=float,
         default=0,
         help="Number of steps for the warmup in the lr scheduler (default is 0) / 学習率のスケジューラをウォームアップするステップ数（デフォルト0）",
     )
@@ -3728,6 +3728,7 @@ def get_optimizer(args, trainable_params):
             for group in trainable_params:
                 lrs.add(group.get("lr", actual_lr))
             lr_count = len(lrs)
+            actual_lr = max(lrs)
 
         if actual_lr <= 0.1:
             logger.warning(
@@ -3735,19 +3736,14 @@ def get_optimizer(args, trainable_params):
             )
             logger.warning("recommend option: lr=1.0 / 推奨は1.0です")
         if lr_count > 1:
-            if optimizer_type == "prodigy":
-                logger.info("applying layer_scale for prodigy")
-                # set learning rates to 1.0 and use layer_scale instead
-                for param in trainable_params:
-                    if "lr" in param:
-                        param["layer_scale"] = param["lr"]
-                        if param["lr"] > 0.0:
-                            # use layer_scale instead of lr unless it's 0.0 to disable training
-                            del param["lr"]
-            else:
-                logger.warning(
-                    f"when multiple learning rates are specified with dadaptation (e.g. for Text Encoder and U-Net), only the first one will take effect / D-AdaptationまたはProdigyで複数の学習率を指定した場合（Text EncoderとU-Netなど）、最初の学習率のみが有効になります: lr={actual_lr}"
-                )
+            logger.info(f"applying layer_scale for {optimizer_type}")
+            # set learning rates to 1.0 and use layer_scale instead
+            for param in trainable_params:
+                if "lr" in param:
+                    param["layer_scale"] = param["lr"]
+                    if param["lr"] > 0.0:
+                        # use layer_scale instead of lr unless it's 0.0 to disable training
+                        del param["lr"]
 
         if optimizer_type.startswith("DAdapt".lower()):
             # DAdaptation family
@@ -3906,6 +3902,11 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     num_training_steps = args.max_train_steps * num_processes  # * args.gradient_accumulation_steps
     num_cycles = args.lr_scheduler_num_cycles
     power = args.lr_scheduler_power
+
+    # interpret fractional warmup steps as percentage of num_training_steps
+    if num_warmup_steps and 0 < num_warmup_steps < 1:
+        num_warmup_steps *= num_training_steps
+        logger.info(f"setting warmup to {num_warmup_steps} steps")
 
     lr_scheduler_kwargs = {}  # get custom lr_scheduler kwargs
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
