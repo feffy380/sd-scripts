@@ -740,7 +740,7 @@ class BaseDataset(torch.utils.data.Dataset):
         if tokenizer is None:
             tokenizer = self.tokenizers[0]
 
-        if input_ids.size()[-1] > tokenizer.model_max_length:
+        if input_ids.shape[-1] > tokenizer.model_max_length:
             input_ids = input_ids.squeeze(0)
             iids_list = []
             if tokenizer.pad_token_id == tokenizer.eos_token_id:
@@ -748,7 +748,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # 77以上の時は "<BOS> .... <EOS> <EOS> <EOS>" でトータル227とかになっているので、"<BOS>...<EOS>"の三連に変換する
                 # 1111氏のやつは , で区切る、とかしているようだが　とりあえず単純に
                 for i in range(
-                    1, input_ids.size()[-1] - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
+                    1, input_ids.shape[-1] - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
                 ):  # (1, 152, 75)
                     ids_chunk = (
                         input_ids[0].unsqueeze(0),
@@ -760,7 +760,9 @@ class BaseDataset(torch.utils.data.Dataset):
             else:
                 # v2 or SDXL
                 # 77以上の時は "<BOS> .... <EOS> <PAD> <PAD>..." でトータル227とかになっているので、"<BOS>...<EOS> <PAD> <PAD> ..."の三連に変換する
-                for i in range(1, self.tokenizer_max_length - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2):
+                for i in range(
+                    1, input_ids.shape[-1] - tokenizer.model_max_length + 2, tokenizer.model_max_length - 2
+                ):
                     ids_chunk = (
                         input_ids[0].unsqueeze(0),  # BOS
                         input_ids[i : i + tokenizer.model_max_length - 2],
@@ -770,7 +772,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
                     # 末尾が <EOS> <PAD> または <PAD> <PAD> の場合は、何もしなくてよい
                     # 末尾が x <PAD/EOS> の場合は末尾を <EOS> に変える（x <EOS> なら結果的に変化なし）
-                    if ids_chunk[-2] != tokenizer.eos_token_id and ids_chunk[-2] != tokenizer.pad_token_id:
+                    if ids_chunk[-2] not in (tokenizer.eos_token_id, tokenizer.pad_token_id):
                         ids_chunk[-1] = tokenizer.eos_token_id
                     # 先頭が <BOS> <PAD> ... の場合は <BOS> <EOS> <PAD> ... に変える
                     if ids_chunk[1] == tokenizer.pad_token_id:
@@ -781,8 +783,9 @@ class BaseDataset(torch.utils.data.Dataset):
             input_ids = torch.stack(iids_list)  # 3,77
         return input_ids
 
-    # insert padding so input_ids are split at the nearest comma token (v1.x only)
+    # insert padding so input_ids are split at the nearest comma token
     def pad_to_comma_token(self, input_ids, tokenizer):
+        input_ids = input_ids.squeeze(0)
         # get comma token
         comma_token = tokenizer(",", add_special_tokens=False, return_tensors="pt").input_ids.squeeze()
         # find comma indices
@@ -790,7 +793,7 @@ class BaseDataset(torch.utils.data.Dataset):
         chunk_size = tokenizer.model_max_length - 2
         iids_list = [input_ids[0].unsqueeze(0)]  # start with BOS token
         # loop over indices to build chunks (ignore BOS and EOS)
-        comma_indices.append(input_ids.size(0) - 2)  # virtual end comma
+        comma_indices.append(input_ids.shape[0] - 2)  # virtual end comma
         prev_comma = 0
         for i in range(len(comma_indices)):
             # find last comma before chunk_length
@@ -798,22 +801,24 @@ class BaseDataset(torch.utils.data.Dataset):
                 continue
             ids_chunk = input_ids[prev_comma+1 : comma_indices[i]+1]
             # pad with tokenizer.pad_token_id up to chunk length
-            if ids_chunk.size(0) < chunk_size:
+            if ids_chunk.shape[0] < chunk_size:
                 ids_chunk = torch.cat((
                     ids_chunk,
-                    torch.full((chunk_size - ids_chunk.size(0),), tokenizer.pad_token_id)
+                    torch.full((chunk_size - ids_chunk.shape[0],), tokenizer.pad_token_id)
                 ))
             iids_list.append(ids_chunk)
             prev_comma = comma_indices[i]
         # concat chunks and append EOS token
-        input_ids = torch.cat(iids_list + [input_ids[-1].unsqueeze(0)])
+        # append EOS token and concatenate chunks
+        iids_list.append(input_ids[-1].unsqueeze(0))
+        input_ids = torch.cat(iids_list)
         return input_ids
 
     def pad_batch_tokens(self, input_ids_list, tokenizer):
         # pad input_ids to longest in batch
-        input_ids_list = [self.pad_to_comma_token(i.squeeze(0), tokenizer) for i in input_ids_list]
+        input_ids_list = [self.pad_to_comma_token(i, tokenizer) for i in input_ids_list]
         max_standard_tokens = tokenizer.model_max_length - 2
-        max_len = max(i.size()[-1] for i in input_ids_list) - 2
+        max_len = max(i.shape[-1] for i in input_ids_list) - 2
         num_chunks = max(math.ceil(max_len / max_standard_tokens), 1)
         len_input = max_standard_tokens * num_chunks + 2
 
@@ -822,7 +827,7 @@ class BaseDataset(torch.utils.data.Dataset):
             padding="max_length",
             max_length=len_input,
             return_tensors="pt"
-        ).input_ids
+        ).input_ids.unsqueeze(1)
         input_ids_list = [self.chunk_input_ids(input_ids, tokenizer) for input_ids in input_ids_list]
         return torch.stack(input_ids_list)
 
@@ -1335,7 +1340,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     example["input_ids2"] = None
             else:
                 example["input_ids"] = self.pad_batch_tokens(input_ids_list, self.tokenizers[0])
-                example["input_ids2"] = self.pad_batch_tokens(input_ids2_list, self.tokenizers[0]) if len(self.tokenizers) > 1 else None
+                example["input_ids2"] = self.pad_batch_tokens(input_ids2_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
             example["text_encoder_outputs1_list"] = None
             example["text_encoder_outputs2_list"] = None
             example["text_encoder_pool2_list"] = None
@@ -4300,7 +4305,7 @@ def get_hidden_states_sdxl(
     accelerator: Optional[Accelerator] = None,
 ):
     # input_ids: b,n,77 -> b*n, 77
-    b_size = input_ids1.size()[0]
+    b_size, n_size, _ = input_ids1.shape
     input_ids1 = input_ids1.reshape((-1, tokenizer1.model_max_length))  # batch_size*n, 77
     input_ids2 = input_ids2.reshape((-1, tokenizer2.model_max_length))  # batch_size*n, 77
 
@@ -4317,7 +4322,7 @@ def get_hidden_states_sdxl(
     pool2 = pool_workaround(unwrapped_text_encoder2, enc_out["last_hidden_state"], input_ids2, tokenizer2.eos_token_id)
 
     # b*n, 77, 768 or 1280 -> b, n*77, 768 or 1280
-    n_size = 1 if max_token_length is None else max_token_length // 75
+    # n_size = 1 if max_token_length is None else max_token_length // 75
     hidden_states1 = hidden_states1.reshape((b_size, -1, hidden_states1.shape[-1]))
     hidden_states2 = hidden_states2.reshape((b_size, -1, hidden_states2.shape[-1]))
 
