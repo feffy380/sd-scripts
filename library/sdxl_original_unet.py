@@ -30,7 +30,7 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
-from library.attention_processors import FlashAttentionFunction
+from library.attention_processors import FlashAttentionFunction, FlashAttnFuncNavi, flash_attn_installed
 from .utils import setup_logging
 setup_logging()
 import logging
@@ -346,6 +346,8 @@ class CrossAttention(nn.Module):
 
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
 
+        if not torch.is_grad_enabled() and flash_attn_installed and q.shape[-1] <= 128:
+            flash_func = FlashAttnFuncNavi
         out = flash_func.apply(q, k, v, mask, False, q_bucket_size, k_bucket_size)
 
         out = rearrange(out, "b h n d -> b n (h d)")

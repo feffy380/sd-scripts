@@ -5,6 +5,13 @@ import torch
 from torch import einsum
 from diffusers.models.attention_processor import Attention
 
+try:
+    from flash_attn.flash_attn_interface import _flash_attn_forward
+    flash_attn_installed = True
+except ImportError:
+    flash_attn_installed = False
+    print("flash_attn not found")
+
 
 # FlashAttentionを使うCrossAttention
 # based on https://github.com/lucidrains/memory-efficient-attention-pytorch/blob/main/memory_efficient_attention_pytorch/flash_attention.py
@@ -32,7 +39,6 @@ def default(val, d):
 
 class FlashAttentionFunction(torch.autograd.Function):
     @staticmethod
-    @torch.no_grad()
     def forward(ctx, q, k, v, mask, causal, q_bucket_size, k_bucket_size):
         """ Algorithm 1 in the v2 paper """
 
@@ -120,7 +126,6 @@ class FlashAttentionFunction(torch.autograd.Function):
         return o
 
     @staticmethod
-    @torch.no_grad()
     def backward(ctx, do):
         """ Algorithm 2 in the v2 paper """
 
@@ -184,6 +189,44 @@ class FlashAttentionFunction(torch.autograd.Function):
                 dvc.add_(dv_chunk)
 
         return dq, dk, dv, None, None, None, None
+
+
+# forward-only flash attention for Navi
+class FlashAttnFuncNavi(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, mask, causal, q_bucket_size, k_bucket_size):
+        dropout_p = 0.0
+        softmax_scale = q.shape[-1] ** (-0.5)
+        return_softmax = False
+
+        q, k, v = (rearrange(t, "b h n d -> b n h d") for t in (q, k, v))
+        out, q, k, v, out_padded, lse, _, _ = _flash_attn_forward(
+            q, k, v, dropout_p, softmax_scale, causal=causal,
+            return_softmax=return_softmax and dropout_p > 0
+        )
+        out = rearrange(out, "b n h d -> b h n d")
+        # out, q, k, v, out_padded = (rearrange(t, "b n h d -> b h n d") for t in (out, q, k, v, out_padded))
+        # lse = rearrange(lse, "b h n -> b h n 1").to(dtype=q.dtype)
+
+        # num_row_tiles = math.ceil(q.shape[-2] / q_bucket_size)
+        # num_col_tiles = math.ceil(k.shape[-2] / k_bucket_size)
+        # if exists(mask) and mask.ndim == 2:
+        #     mask = rearrange(mask, 'b n -> b 1 1 n')
+        # if not exists(mask):
+        #     col_masks = (None,) * num_col_tiles
+        #     mask = (col_masks,) * num_row_tiles
+        # else:
+        #     mask = ((mask,) * num_row_tiles) if mask.shape[-2] == 1 else mask.split(q_bucket_size, dim = -2)
+        #     mask = tuple(((row_mask,) * num_col_tiles) if row_mask.shape[-1] == 1 else row_mask.split(k_bucket_size, dim = -1) for row_mask in mask)
+
+        # ctx.args = (causal, softmax_scale, mask, q_bucket_size, k_bucket_size)
+        # ctx.save_for_backward(q, k, v, out_padded, lse)
+
+        return out
+
+    @staticmethod
+    def backward(ctx, do):
+        raise NotImplementedError("flash_attn-rocm does not support backward pass")
 
 
 class FlashAttnProcessor:
