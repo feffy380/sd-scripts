@@ -78,6 +78,8 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     is_reg: bool = False
     class_tokens: Optional[str] = None
     caption_extension: str = ".caption"
+    # self-distillation
+    is_negative: bool = False
 
 
 @dataclass
@@ -109,6 +111,9 @@ class DreamBoothDatasetParams(BaseDatasetParams):
     bucket_reso_steps: int = 64
     bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
+    # self-distillation
+    positive_label: str = None
+    negative_label: str = None
 
 
 @dataclass
@@ -200,6 +205,7 @@ class ConfigSanitizer:
     DB_SUBSET_DISTINCT_SCHEMA = {
         Required("image_dir"): str,
         "is_reg": bool,
+        "is_negative": bool,
     }
     # FT means FineTuning
     FT_SUBSET_DISTINCT_SCHEMA = {
@@ -224,6 +230,8 @@ class ConfigSanitizer:
         "min_bucket_reso": int,
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "network_multiplier": float,
+        "positive_label": str,
+        "negative_label": str,
     }
 
     # options handled by argparse but not handled by user config
@@ -478,6 +486,18 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
     """
         )
 
+        # TODO: move to own dataset type, possibly subclassing DreamBoothDataset
+        if is_dreambooth:
+            info += indent(
+                dedent(
+                    f"""\
+        positive_label: {dataset.positive_label}
+        negative_label: {dataset.negative_label}
+        """
+                ),
+                "  ",
+            )
+
         if dataset.enable_bucket:
             info += indent(
                 dedent(
@@ -525,6 +545,7 @@ def generate_dataset_group_by_blueprint(dataset_group_blueprint: DatasetGroupBlu
                     dedent(
                         f"""\
           is_reg: {subset.is_reg}
+          is_negative: {subset.is_negative}
           class_tokens: {subset.class_tokens}
           caption_extension: {subset.caption_extension}
         \n"""

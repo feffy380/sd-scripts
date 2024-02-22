@@ -57,9 +57,9 @@ class NetworkTrainer:
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
-        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None
+        self, args: argparse.Namespace, current_loss, avr_loss, lr_scheduler, keys_scaled=None, mean_norm=None, maximum_norm=None, denoise_loss=None, cfg_loss=None
     ):
-        logs = {"loss/current": current_loss, "loss/average": avr_loss}
+        logs = {"loss/current": current_loss, "loss/average": avr_loss, "loss/denoise": denoise_loss, "loss/cfg": cfg_loss}
 
         if keys_scaled is not None:
             logs["max_norm/keys_scaled"] = keys_scaled
@@ -829,9 +829,19 @@ class NetworkTrainer:
                                 clip_skip=args.clip_skip,
                             )
                         else:
-                            text_encoder_conds = self.get_text_cond(
-                                args, accelerator, batch, tokenizers, text_encoders, weight_dtype
-                            )
+                            # TODO: skip duplicate encoding
+                            text_encoder_conds = {}
+                            batch["input_ids_caption"] = batch["input_ids"]
+                            batch["input_ids2_caption"] = batch["input_ids2"]
+                            for key in ["caption", "neutral"]:
+                                batch["input_ids"] = batch[f"input_ids_{key}"]
+                                batch["input_ids2"] = batch[f"input_ids2_{key}"]
+                                text_encoder_conds[key] = self.get_text_cond(args, accelerator, batch, tokenizers, text_encoders, weight_dtype)
+                            with torch.no_grad():
+                                for key in ["empty", "positive", "negative"]:
+                                    batch["input_ids"] = batch[f"input_ids_{key}"]
+                                    batch["input_ids2"] = batch[f"input_ids2_{key}"]
+                                    text_encoder_conds[key] = self.get_text_cond(args, accelerator, batch, tokenizers, text_encoders, weight_dtype)
 
                     # decay ip_noise_gamma
                     # args.ip_noise_gamma = orig_ip_noise_gamma / 2 * (1 + math.cos(global_step / args.max_train_steps * math.pi))
@@ -846,30 +856,113 @@ class NetworkTrainer:
                     if args.gradient_checkpointing:
                         for x in noisy_latents:
                             x.requires_grad_(True)
-                        for t in text_encoder_conds:
-                            t.requires_grad_(True)
+                        for conds in text_encoder_conds:
+                            for t in conds:
+                                t.requires_grad_(True)
+
+                    def check_nan(tensor, name=""):
+                        fail = False
+                        if torch.isnan(tensor).any():
+                            print(f"NaN detected in {name}")
+                            fail = True
+                        if torch.isinf(tensor).any():
+                            print(f"Inf detected in {name}")
+                            fail = True
+                        assert not fail, "stopping"
+
+                    def dot(a, b):
+                        return (a * b).sum(dim=(1, 2, 3), keepdims=True)
+
+                    def proj(a, b):
+                        a_dot_b = dot(a, b)
+                        b_dot_b = dot(b, b)
+                        # avoid division by zero
+                        divisor = torch.where(
+                            b_dot_b != 0,
+                            b_dot_b,
+                            torch.ones_like(b_dot_b)
+                        )
+                        check_nan(a_dot_b, "a.b")
+                        check_nan(b_dot_b, "b.b")
+                        check_nan(divisor, "divisor")
+                        return (a_dot_b / divisor) * b
+
+                    def oproj(a, b):
+                        return a - proj(a, b)
 
                     # Predict the noise residual
                     with accelerator.autocast():
-                        noise_pred = self.call_unet(
-                            args,
-                            accelerator,
-                            unet,
-                            noisy_latents.requires_grad_(train_unet),
-                            timesteps,
-                            text_encoder_conds,
-                            batch,
-                            weight_dtype,
-                        )
+                        noise_pred = {}
+                        for key in ["caption", "neutral"]:
+                            noise_pred[key] = self.call_unet(
+                                args,
+                                accelerator,
+                                unet,
+                                noisy_latents.requires_grad_(train_unet),
+                                timesteps,
+                                text_encoder_conds[key],
+                                batch,
+                                weight_dtype,
+                            )
+                        compute_empty = torch.tensor([caption != "" for caption in batch["captions_neutral"]]).nonzero().squeeze(-1)
+                        compute_positive = torch.tensor([caption != pos for caption, pos in zip(batch["captions"], batch["captions_positive"])]).nonzero().squeeze(-1)
+                        compute_negative = torch.tensor([caption != neg for caption, neg in zip(batch["captions"], batch["captions_negative"])]).nonzero().squeeze(-1)
+                        with torch.no_grad():
+                            dests = ["empty", "positive", "negative"]
+                            srcs = ["neutral", "caption", "caption"]
+                            idxs = [compute_empty, compute_positive, compute_negative]
+                            for dest, src, idx in zip(dests, srcs, idxs):
+                                noise_pred[dest] = noise_pred[src].detach()
+                                if idx.shape[0] == 0:
+                                    continue
+                                pred = self.call_unet(
+                                    args,
+                                    accelerator,
+                                    unet,
+                                    noisy_latents.requires_grad_(False)[idx],
+                                    timesteps[idx],
+                                    text_encoder_conds[dest][idx],
+                                    batch,
+                                    weight_dtype,
+                                )
+                                noise_pred[dest][idx] = pred
 
+                    # CFG self-distillation loss
+                    # TODO: numerical stability issues in cfg loss
+                    with torch.no_grad():
+                        empty = noise_pred["empty"].float()
+                        check_nan(empty, "empty")
+                        pos_vec = noise_pred["positive"].float() - empty
+                        check_nan(pos_vec, "pos_vec")
+                        neg = noise_pred["negative"].float()
+                        check_nan(neg, "neg")
+                        neutral = noise_pred["neutral"].float()
+                        check_nan(neutral, "neutral")
+                        # approximate oproj(negative_label, pos_vec) by assuming negative = negative_label + neutral
+                        # oproj(negative_label, pos_vec) = oproj(neg-empty, pos_vec) - oproj(neutral-empty, pos_vec)
+                        # = oproj(neg - neutral, pos_vec)
+                        check_nan(neg - neutral, "neg - neutral")
+                        perp_neg = oproj(neg - neutral, pos_vec)
+                        check_nan(perp_neg, "perp_neg")
+                        cfg_target = args.cfg_scale * (pos_vec - args.neg_scale * perp_neg)
+                        check_nan(cfg_target, "cfg_target")
+                    cfg_pred = args.cfg_scale * (neutral - empty)
+                    check_nan(cfg_pred, "cfg_pred")
+                    cfg_loss = torch.nn.functional.mse_loss(cfg_pred.float(), cfg_target.float(), reduction="none")
+                    check_nan(cfg_loss, "cfg_loss")
+
+                    # denoising loss
                     if args.v_parameterization:
                         # v-parameterization training
                         target = noise_scheduler.get_velocity(latents, noise, timesteps)
                     else:
                         target = noise
+                    denoise_loss = torch.nn.functional.mse_loss(noise_pred["caption"].float(), target.float(), reduction="none")
 
-                    loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                    loss = cfg_loss + denoise_loss
                     loss = loss.mean([1, 2, 3])
+                    denoise_loss = denoise_loss.detach().mean().item()
+                    cfg_loss = cfg_loss.detach().mean().item()
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights
@@ -882,7 +975,7 @@ class NetworkTrainer:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
-                    raw_loss = loss.mean()
+                    # raw_loss = loss.mean()
                     # loss = apply_multi_task_weight(loss, timesteps, multi_task_weights)
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
@@ -928,8 +1021,7 @@ class NetworkTrainer:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
 
-                # current_loss = loss.detach().item()
-                current_loss = raw_loss.detach().item()
+                current_loss = loss.detach().item()
                 loss_recorder.add(epoch=epoch-start_epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
@@ -939,7 +1031,7 @@ class NetworkTrainer:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
 
                 if args.logging_dir is not None:
-                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
+                    logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm, denoise_loss, cfg_loss)
                     accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:
@@ -1087,6 +1179,18 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_half_vae",
         action="store_true",
         help="do not use fp16/bf16 VAE in mixed precision (use float VAE) / mixed precisionでも fp16/bf16 VAEを使わずfloat VAEを使う",
+    )
+    parser.add_argument(
+        "--cfg_scale",
+        type=float,
+        default=1.0,
+        help="CFG scale to use for self-distillation",
+    )
+    parser.add_argument(
+        "--neg_scale",
+        type=float,
+        default=1.0,
+        help="negative prompt scale to use for self-distillation with Perp-Neg",
     )
     return parser
 

@@ -396,6 +396,7 @@ class DreamBoothSubset(BaseSubset):
         self,
         image_dir: str,
         is_reg: bool,
+        is_negative: bool,
         class_tokens: Optional[str],
         caption_extension: str,
         num_repeats,
@@ -438,6 +439,7 @@ class DreamBoothSubset(BaseSubset):
         )
 
         self.is_reg = is_reg
+        self.is_negative = is_negative
         self.class_tokens = class_tokens
         self.caption_extension = caption_extension
         if self.caption_extension and not self.caption_extension.startswith("."):
@@ -565,6 +567,8 @@ class BaseDataset(torch.utils.data.Dataset):
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
+        positive_label: Optional[str],
+        negative_label: Optional[str],
     ) -> None:
         super().__init__()
 
@@ -575,6 +579,8 @@ class BaseDataset(torch.utils.data.Dataset):
         self.width, self.height = (None, None) if resolution is None else resolution
         self.network_multiplier = network_multiplier
         self.debug_dataset = debug_dataset
+        self.positive_label = positive_label
+        self.negative_label = negative_label
 
         self.subsets: List[Union[DreamBoothSubset, FineTuningSubset]] = []
 
@@ -1186,8 +1192,19 @@ class BaseDataset(torch.utils.data.Dataset):
 
         loss_weights = []
         captions = []
+        captions_neutral = []
+        captions_positive = []
+        captions_negative = []
         input_ids_list = []
+        input_ids_neutral_list = []
+        input_ids_positive_list = []
+        input_ids_negative_list = []
+        input_ids_empty_list = [self.get_input_ids("", self.tokenizers[0])] * bucket_batch_size
         input_ids2_list = []
+        input_ids2_neutral_list = []
+        input_ids2_positive_list = []
+        input_ids2_negative_list = []
+        input_ids2_empty_list = [self.get_input_ids("", self.tokenizers[1])] * bucket_batch_size if len(self.tokenizers) > 1 else []
         latents_list = []
         images = []
         original_sizes_hw = []
@@ -1299,7 +1316,13 @@ class BaseDataset(torch.utils.data.Dataset):
                 text_encoder_pool2_list.append(text_encoder_pool2)
                 captions.append(caption)
             else:
-                caption = self.process_caption(subset, image_info.caption)
+                caption_neutral = self.process_caption(subset, image_info.caption)
+                caption_positive = self.positive_label
+                caption_negative = self.negative_label
+                if caption_neutral:
+                    caption_positive += ", " + caption_neutral
+                    caption_negative += ", " + caption_neutral
+                caption = caption_negative if subset.is_negative else caption_positive
                 if self.XTI_layers:
                     caption_layer = []
                     for layer in self.XTI_layers:
@@ -1310,20 +1333,35 @@ class BaseDataset(torch.utils.data.Dataset):
                     captions.append(caption_layer)
                 else:
                     captions.append(caption)
+                    captions_neutral.append(caption_neutral)
+                    captions_positive.append(caption_positive)
+                    captions_negative.append(caption_negative)
 
                 if not self.token_padding_disabled:  # this option might be omitted in future
                     if self.XTI_layers:
                         token_caption = self.get_input_ids(caption_layer, self.tokenizers[0])
                     else:
-                        token_caption = self.get_input_ids(caption, self.tokenizers[0])
+                        token_caption_neutral = self.get_input_ids(caption_neutral, self.tokenizers[0])
+                        token_caption_positive = self.get_input_ids(caption_positive, self.tokenizers[0])
+                        token_caption_negative = self.get_input_ids(caption_negative, self.tokenizers[0])
+                        token_caption = token_caption_negative if subset.is_negative else token_caption_positive
                     input_ids_list.append(token_caption)
+                    input_ids_neutral_list.append(token_caption_neutral)
+                    input_ids_positive_list.append(token_caption_positive)
+                    input_ids_negative_list.append(token_caption_negative)
 
                     if len(self.tokenizers) > 1:
                         if self.XTI_layers:
                             token_caption2 = self.get_input_ids(caption_layer, self.tokenizers[1])
                         else:
-                            token_caption2 = self.get_input_ids(caption, self.tokenizers[1])
+                            token_caption2_neutral = self.get_input_ids(caption_neutral, self.tokenizers[1])
+                            token_caption2_positive = self.get_input_ids(caption_positive, self.tokenizers[1])
+                            token_caption2_negative = self.get_input_ids(caption_negative, self.tokenizers[1])
+                            token_caption2 = token_caption2_negative if subset.is_negative else token_caption2_positive
                         input_ids2_list.append(token_caption2)
+                        input_ids2_neutral_list.append(token_caption2_neutral)
+                        input_ids2_positive_list.append(token_caption2_positive)
+                        input_ids2_negative_list.append(token_caption2_negative)
 
         example = {}
         example["loss_weights"] = torch.FloatTensor(loss_weights)
@@ -1340,7 +1378,16 @@ class BaseDataset(torch.utils.data.Dataset):
                     example["input_ids2"] = None
             else:
                 example["input_ids"] = self.pad_batch_tokens(input_ids_list, self.tokenizers[0])
+                example["input_ids_empty"] = self.pad_batch_tokens(input_ids_empty_list, self.tokenizers[0])
+                example["input_ids_neutral"] = self.pad_batch_tokens(input_ids_neutral_list, self.tokenizers[0])
+                example["input_ids_positive"] = self.pad_batch_tokens(input_ids_positive_list, self.tokenizers[0])
+                example["input_ids_negative"] = self.pad_batch_tokens(input_ids_negative_list, self.tokenizers[0])
+
                 example["input_ids2"] = self.pad_batch_tokens(input_ids2_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
+                example["input_ids2_empty"] = self.pad_batch_tokens(input_ids2_empty_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
+                example["input_ids2_neutral"] = self.pad_batch_tokens(input_ids2_neutral_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
+                example["input_ids2_positive"] = self.pad_batch_tokens(input_ids2_positive_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
+                example["input_ids2_negative"] = self.pad_batch_tokens(input_ids2_negative_list, self.tokenizers[1]) if len(self.tokenizers) > 1 else None
             example["text_encoder_outputs1_list"] = None
             example["text_encoder_outputs2_list"] = None
             example["text_encoder_pool2_list"] = None
@@ -1363,6 +1410,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
         example["latents"] = torch.stack(latents_list) if latents_list[0] is not None else None
         example["captions"] = captions
+        example["captions_neutral"] = captions_neutral
+        example["captions_positive"] = captions_positive
+        example["captions_negative"] = captions_negative
 
         example["original_sizes_hw"] = torch.stack([torch.LongTensor(x) for x in original_sizes_hw])
         example["crop_top_lefts"] = torch.stack([torch.LongTensor(x) for x in crop_top_lefts])
@@ -1453,10 +1503,14 @@ class DreamBoothDataset(BaseDataset):
         bucket_no_upscale: bool,
         prior_loss_weight: float,
         debug_dataset: bool,
+        positive_label: str,
+        negative_label: str,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset, positive_label, negative_label)
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
+        assert positive_label is not None, "positive_label is required"
+        assert negative_label is not None, "negative_label is required"
 
         self.batch_size = batch_size
         self.size = min(self.width, self.height)  # 短いほう
