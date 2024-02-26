@@ -787,6 +787,10 @@ class LoRANetwork(torch.nn.Module):
         super().__init__()
         self.multiplier = multiplier
 
+        self._downkeys = []
+        self._upkeys = []
+        self._alphakeys = []
+
         self.lora_dim = lora_dim
         self.alpha = alpha
         self.conv_lora_dim = conv_lora_dim
@@ -1209,18 +1213,23 @@ class LoRANetwork(torch.nn.Module):
             lora.enabled = False
 
     def apply_max_norm_regularization(self, max_norm_value, device):
-        downkeys = []
-        upkeys = []
-        alphakeys = []
-        norms = []
-        keys_scaled = 0
+        # downkeys = []
+        # upkeys = []
+        # alphakeys = []
+        # norms = []
+        # keys_scaled = 0
+
+        downkeys = self._downkeys
+        upkeys = self._upkeys
+        alphakeys = self._alphakeys
 
         state_dict = self.state_dict()
-        for key in state_dict.keys():
-            if "lora_down" in key and "weight" in key:
-                downkeys.append(key)
-                upkeys.append(key.replace("lora_down", "lora_up"))
-                alphakeys.append(key.replace("lora_down.weight", "alpha"))
+        if not downkeys:
+            for key in state_dict.keys():
+                if "lora_down" in key and "weight" in key:
+                    downkeys.append(key)
+                    upkeys.append(key.replace("lora_down", "lora_up"))
+                    alphakeys.append(key.replace("lora_down.weight", "alpha"))
 
         for i in range(len(downkeys)):
             down = state_dict[downkeys[i]].to(device)
@@ -1240,13 +1249,17 @@ class LoRANetwork(torch.nn.Module):
 
             norm = updown.norm().clamp(min=max_norm_value / 2)
             desired = torch.clamp(norm, max=max_norm_value)
-            ratio = desired.cpu() / norm.cpu()
+            # ratio = desired.cpu() / norm.cpu()
+            ratio = desired / norm
             sqrt_ratio = ratio**0.5
-            if ratio != 1:
-                keys_scaled += 1
-                state_dict[upkeys[i]] *= sqrt_ratio
-                state_dict[downkeys[i]] *= sqrt_ratio
-            scalednorm = updown.norm() * ratio
-            norms.append(scalednorm.item())
+            # if ratio != 1:
+            #     keys_scaled += 1
+            #     state_dict[upkeys[i]] *= sqrt_ratio
+            #     state_dict[downkeys[i]] *= sqrt_ratio
+            # scalednorm = updown.norm() * ratio
+            # norms.append(scalednorm.item())
+            state_dict[upkeys[i]] *= sqrt_ratio
+            state_dict[downkeys[i]] *= sqrt_ratio
 
-        return keys_scaled, sum(norms) / len(norms), max(norms)
+        # return keys_scaled, sum(norms) / len(norms), max(norms)
+        return 0, 0, 0
