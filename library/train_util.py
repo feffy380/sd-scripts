@@ -66,6 +66,7 @@ from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipel
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
+from library import token_merging
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -3169,6 +3170,17 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
             " whether the biased portions are in the earlier or later timesteps."
         ),
     )
+    parser.add_argument(
+        "--todo_factor",
+        type=float,
+        help="token downsampling (ToDo) factor > 1 (recommend starting with 2)",
+    )
+    parser.add_argument(
+        "--todo_args",
+        type=str,
+        nargs="*",
+        help='additional arguments for ToDo (like "downsample_factor_depth_2=2")',
+    )
 
     parser.add_argument(
         "--lowram",
@@ -4190,6 +4202,10 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
             gc.collect()
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
+
+    # apply token merging patch
+    if args.todo_factor:
+        token_merging.patch_attention(unet, args)
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
