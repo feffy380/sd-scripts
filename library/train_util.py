@@ -3169,16 +3169,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
             " whether the biased portions are in the earlier or later timesteps."
         ),
     )
-    parser.add_argument(
-        "--tome_ratio",
-        type=float,
-        help="token merge ratio for tomesd",
-    )
-    parser.add_argument(
-        "--stop_tome",
-        type=float,
-        help="step to disable token merging. value less than 1.0 is treated as portion of total training steps",
-    )
 
     parser.add_argument(
         "--lowram",
