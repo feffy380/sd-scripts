@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def up_or_downsample(item, cur_w, cur_h, new_w, new_h, method):
+def up_or_downsample(item, cur_w, cur_h, new_w, new_h, method="nearest-exact"):
     batch_size = item.shape[0]
 
     item = item.reshape(batch_size, cur_h, cur_w, -1).permute(0, 3, 1, 2)
@@ -39,11 +39,11 @@ def compute_merge(x: torch.Tensor, tome_info: dict):
     if downsample == 1 and downsample_factor_1 > 1:
         new_h = int(cur_h / downsample_factor_1)
         new_w = int(cur_w / downsample_factor_1)
-        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h, tome_info["args"]["downsample_method"])
+        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h)
     elif downsample == 2 and downsample_factor_2 > 1:
         new_h = int(cur_h / downsample_factor_2)
         new_w = int(cur_w / downsample_factor_2)
-        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h, tome_info["args"]["downsample_method"])
+        merge_op = lambda x: up_or_downsample(x, cur_w, cur_h, new_w, new_h)
 
     return merge_op
 
@@ -77,9 +77,7 @@ def parse_todo_args(args, is_sdxl: bool) -> dict:
     todo_kwargs = {
         "downsample_factor_depth_1": 1,
         "downsample_factor_depth_2": 1,
-        "downsample_method": "nearest-exact",
     }
-
     if is_sdxl:
         # SDXL doesn't have depth 1, so default to depth 2
         todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[0]
@@ -87,10 +85,6 @@ def parse_todo_args(args, is_sdxl: bool) -> dict:
         todo_kwargs["downsample_factor_depth_1"] = args.todo_factor[0]
         todo_kwargs["downsample_factor_depth_2"] = args.todo_factor[1] if len(args.todo_factor) == 2 else 1
 
-    if args.todo_args:
-        for arg in args.todo_args:
-            key, value = arg.split("=")
-            todo_kwargs[key] = ast.literal_eval(value)
     logger.info(f"enable token downsampling optimization | {todo_kwargs}")
 
     return todo_kwargs
