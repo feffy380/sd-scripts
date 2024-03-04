@@ -16,10 +16,9 @@ import re
 
 import diffusers
 import numpy as np
+
 import torch
-
-from library.ipex_interop import init_ipex
-
+from library.device_utils import init_ipex, clean_memory, get_preferred_device
 init_ipex()
 
 import torchvision
@@ -381,10 +380,10 @@ class PipelineLike:
 
     def set_gradual_latent(self, gradual_latent):
         if gradual_latent is None:
-            print("gradual_latent is disabled")
+            logger.info("gradual_latent is disabled")
             self.gradual_latent = None
         else:
-            print(f"gradual_latent is enabled: {gradual_latent}")
+            logger.info(f"gradual_latent is enabled: {gradual_latent}")
             self.gradual_latent = gradual_latent  # (ds_ratio, start_timesteps, every_n_steps, ratio_step)
 
     @torch.no_grad()
@@ -657,8 +656,7 @@ class PipelineLike:
                     init_latent_dist = self.vae.encode(init_image.to(self.vae.dtype)).latent_dist
                     init_latents = init_latent_dist.sample(generator=generator)
                 else:
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    clean_memory()
                     init_latents = []
                     for i in tqdm(range(0, min(batch_size, len(init_image)), vae_batch_size)):
                         init_latent_dist = self.vae.encode(
@@ -791,8 +789,8 @@ class PipelineLike:
         enable_gradual_latent = False
         if self.gradual_latent:
             if not hasattr(self.scheduler, "set_gradual_latent_params"):
-                print("gradual_latent is not supported for this scheduler. Ignoring.")
-                print(self.scheduler.__class__.__name__)
+                logger.info("gradual_latent is not supported for this scheduler. Ignoring.")
+                logger.info(f'{self.scheduler.__class__.__name__}')
             else:
                 enable_gradual_latent = True
                 step_elapsed = 1000
@@ -908,8 +906,7 @@ class PipelineLike:
         if vae_batch_size >= batch_size:
             image = self.vae.decode(latents.to(self.vae.dtype)).sample
         else:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            clean_memory()
             images = []
             for i in tqdm(range(0, batch_size, vae_batch_size)):
                 images.append(
@@ -924,8 +921,7 @@ class PipelineLike:
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_memory()
 
         if output_type == "pil":
             # image = self.numpy_to_pil(image)
@@ -1625,7 +1621,7 @@ def main(args):
     #     scheduler.config.clip_sample = True
 
     # deviceを決定する
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # "mps"を考量してない
+    device = get_preferred_device()
 
     # custom pipelineをコピったやつを生成する
     if args.vae_slices:
@@ -2618,84 +2614,84 @@ def main(args):
                             m = re.match(r"glt ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent timesteps
                                 gl_timesteps = int(m.group(1))
-                                print(f"gradual latent timesteps: {gl_timesteps}")
+                                logger.info(f"gradual latent timesteps: {gl_timesteps}")
                                 continue
 
                             m = re.match(r"glr ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent ratio
                                 gl_ratio = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent ratio: {ds_ratio}")
+                                logger.info(f"gradual latent ratio: {ds_ratio}")
                                 continue
 
                             m = re.match(r"gle ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent every n steps
                                 gl_every_n_steps = int(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent every n steps: {gl_every_n_steps}")
+                                logger.info(f"gradual latent every n steps: {gl_every_n_steps}")
                                 continue
 
                             m = re.match(r"gls ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent ratio step
                                 gl_ratio_step = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent ratio step: {gl_ratio_step}")
+                                logger.info(f"gradual latent ratio step: {gl_ratio_step}")
                                 continue
 
                             m = re.match(r"glsn ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent s noise
                                 gl_s_noise = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent s noise: {gl_s_noise}")
+                                logger.info(f"gradual latent s noise: {gl_s_noise}")
                                 continue
 
                             m = re.match(r"glus ([\d\.\-,]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent unsharp params
                                 gl_unsharp_params = m.group(1)
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent unsharp params: {gl_unsharp_params}")
+                                logger.info(f"gradual latent unsharp params: {gl_unsharp_params}")
                                 continue
 
                             # Gradual Latent
                             m = re.match(r"glt ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent timesteps
                                 gl_timesteps = int(m.group(1))
-                                print(f"gradual latent timesteps: {gl_timesteps}")
+                                logger.info(f"gradual latent timesteps: {gl_timesteps}")
                                 continue
 
                             m = re.match(r"glr ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent ratio
                                 gl_ratio = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent ratio: {ds_ratio}")
+                                logger.info(f"gradual latent ratio: {ds_ratio}")
                                 continue
 
                             m = re.match(r"gle ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent every n steps
                                 gl_every_n_steps = int(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent every n steps: {gl_every_n_steps}")
+                                logger.info(f"gradual latent every n steps: {gl_every_n_steps}")
                                 continue
 
                             m = re.match(r"gls ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent ratio step
                                 gl_ratio_step = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent ratio step: {gl_ratio_step}")
+                                logger.info(f"gradual latent ratio step: {gl_ratio_step}")
                                 continue
 
                             m = re.match(r"glsn ([\d\.]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent s noise
                                 gl_s_noise = float(m.group(1))
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent s noise: {gl_s_noise}")
+                                logger.info(f"gradual latent s noise: {gl_s_noise}")
                                 continue
 
                             m = re.match(r"glus ([\d\.\-,]+)", parg, re.IGNORECASE)
                             if m:  # gradual latent unsharp params
                                 gl_unsharp_params = m.group(1)
                                 gl_timesteps = gl_timesteps if gl_timesteps is not None else -1  # -1 means override
-                                print(f"gradual latent unsharp params: {gl_unsharp_params}")
+                                logger.info(f"gradual latent unsharp params: {gl_unsharp_params}")
                                 continue
 
                         except ValueError as ex:

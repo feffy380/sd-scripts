@@ -1,6 +1,5 @@
 import importlib
 import argparse
-import gc
 import math
 import os
 import sys
@@ -11,12 +10,12 @@ from multiprocessing import Value
 import toml
 
 from tqdm import tqdm
+
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
-
-from library.ipex_interop import init_ipex
-
+from library.device_utils import init_ipex, clean_memory_on_device
 init_ipex()
+
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from accelerate.utils import set_seed
 from diffusers import DDPMScheduler
@@ -284,9 +283,7 @@ class NetworkTrainer:
             with torch.no_grad():
                 train_dataset_group.cache_latents(vae, args.vae_batch_size, args.cache_latents_to_disk, accelerator.is_main_process)
             vae.to("cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
+            clean_memory_on_device(accelerator.device)
 
             accelerator.wait_for_everyone()
 
@@ -374,8 +371,8 @@ class NetworkTrainer:
         #     return loss
 
         # dataloaderを準備する
-        # DataLoaderのプロセス数：0はメインプロセスになる
-        n_workers = min(args.max_data_loader_n_workers, os.cpu_count() - 1)  # cpu_count-1 ただし最大で指定された数まで
+        # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
+        n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
 
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset_group,
@@ -594,6 +591,11 @@ class NetworkTrainer:
                         "random_crop": bool(subset.random_crop),
                         "shuffle_caption": bool(subset.shuffle_caption),
                         "keep_tokens": subset.keep_tokens,
+                        "keep_tokens_separator": subset.keep_tokens_separator,
+                        "secondary_separator": subset.secondary_separator,
+                        "enable_wildcard": bool(subset.enable_wildcard),
+                        "caption_prefix": subset.caption_prefix,
+                        "caption_suffix": subset.caption_suffix,
                     }
 
                     image_dir_or_metadata_file = None
