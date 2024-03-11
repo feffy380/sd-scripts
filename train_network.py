@@ -341,7 +341,7 @@ class NetworkTrainer:
         if args.gradient_checkpointing:
             unet.enable_gradient_checkpointing()
             for t_enc in text_encoders:
-                t_enc.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                t_enc.gradient_checkpointing_enable()
             del t_enc
             network.enable_gradient_checkpointing()  # may have no effect
 
@@ -905,10 +905,9 @@ class NetworkTrainer:
                     optimizer.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
-                    with torch.no_grad():
-                        keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
-                            args.scale_weight_norms, accelerator.device
-                        )
+                    keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
+                        args.scale_weight_norms, accelerator.device
+                    )
                     max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
                 else:
                     keys_scaled, mean_norm, maximum_norm = None, None, None

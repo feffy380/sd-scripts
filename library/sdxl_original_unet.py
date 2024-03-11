@@ -43,7 +43,7 @@ CONTEXT_DIM: int = 2048
 MODEL_CHANNELS: int = 320
 TIME_EMBED_DIM = 320 * 4
 
-USE_REENTRANT = False
+USE_REENTRANT = True
 
 
 def get_parameter_dtype(parameter: torch.nn.Module):
