@@ -5,6 +5,13 @@ import torch
 from torch import einsum
 from diffusers.models.attention_processor import Attention
 
+try:
+    from flash_attn.flash_attn_interface import _flash_attn_forward
+    flash_attn_installed = True
+except ImportError:
+    flash_attn_installed = False
+    print("flash_attn not found")
+
 
 # FlashAttentionを使うCrossAttention
 # based on https://github.com/lucidrains/memory-efficient-attention-pytorch/blob/main/memory_efficient_attention_pytorch/flash_attention.py
@@ -184,6 +191,27 @@ class FlashAttentionFunction(torch.autograd.Function):
                 dvc.add_(dv_chunk)
 
         return dq, dk, dv, None, None, None, None
+
+
+# forward-only flash attention for Navi
+class FlashAttnFuncNavi(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, mask, causal, q_bucket_size, k_bucket_size):
+        dropout_p = 0.0
+        softmax_scale = q.shape[-1] ** (-0.5)
+        return_softmax = False
+
+        q, k, v = (rearrange(t, "b h n d -> b n h d") for t in (q, k, v))
+        out, q, k, v, out_padded, lse, _, _ = _flash_attn_forward(
+            q, k, v, dropout_p, softmax_scale, causal=causal,
+            return_softmax=return_softmax and dropout_p > 0
+        )
+        out = rearrange(out, "b n h d -> b h n d")
+        return out
+
+    @staticmethod
+    def backward(ctx, do):
+        raise NotImplementedError("flash_attn-rocm does not support backward pass")
 
 
 class FlashAttnProcessor:
