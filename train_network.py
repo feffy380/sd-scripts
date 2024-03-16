@@ -359,17 +359,6 @@ class NetworkTrainer:
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
 
-        # # Uncertainty-based multi-task loss weighting https://arxiv.org/pdf/2312.02696.pdf
-        # multi_task_weights = torch.nn.Parameter(torch.zeros(1000).to(device=accelerator.device))
-        # optimizer.add_param_group({
-        #     "params": multi_task_weights,
-        # })
-
-        # def apply_multi_task_weight(loss, timesteps, multi_task_weights):
-        #     weights = multi_task_weights[timesteps]
-        #     loss = loss / torch.exp(weights) + weights
-        #     return loss
-
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())  # cpu_count or max_data_loader_n_workers
@@ -732,7 +721,6 @@ class NetworkTrainer:
             timestep_spacing="trailing",
             prediction_type=prediction_type,
         )
-        # NOTE: wrong order but empirically min-snr performs better with the unscaled SNR schedule
         if args.zero_terminal_snr:
             custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
@@ -801,7 +789,7 @@ class NetworkTrainer:
 
                     with torch.no_grad():
                         if "latents" in batch and batch["latents"] is not None:
-                            latents = batch["latents"].to(accelerator.device)
+                            latents = batch["latents"].to(device=accelerator.device, non_blocking=True)
                         else:
                             # latentに変換
                             latents = vae.encode(batch["images"].to(dtype=vae_dtype)).latent_dist.sample()
@@ -810,7 +798,7 @@ class NetworkTrainer:
                             if torch.any(torch.isnan(latents)):
                                 accelerator.print("NaN found in latents, replacing with zeros")
                                 latents = torch.nan_to_num(latents, 0, out=latents)
-                        latents = latents * self.vae_scale_factor
+                        # latents = latents * self.vae_scale_factor
 
                     # get multiplier for each sample
                     if network_has_multiplier:
@@ -838,6 +826,9 @@ class NetworkTrainer:
                             text_encoder_conds = self.get_text_cond(
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
+
+                    with torch.no_grad():
+                        latents = latents * self.vae_scale_factor
 
                     # decay ip_noise_gamma
                     # args.ip_noise_gamma = orig_ip_noise_gamma / 2 * (1 + math.cos(global_step / args.max_train_steps * math.pi))
@@ -888,8 +879,6 @@ class NetworkTrainer:
                         loss = add_v_prediction_like_loss(loss, timesteps, noise_scheduler, args.v_pred_like_loss)
                     if args.debiased_estimation_loss:
                         loss = apply_debiased_estimation(loss, timesteps, noise_scheduler)
-                    raw_loss = loss.mean()
-                    # loss = apply_multi_task_weight(loss, timesteps, multi_task_weights)
 
                     loss = loss.mean()  # 平均なのでbatch_sizeで割る必要なし
 
@@ -934,8 +923,7 @@ class NetworkTrainer:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
 
-                # current_loss = loss.detach().item()
-                current_loss = raw_loss.detach().item()
+                current_loss = loss.detach().item()
                 loss_recorder.add(epoch=epoch-start_epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
