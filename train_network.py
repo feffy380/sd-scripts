@@ -18,7 +18,7 @@ init_ipex()
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from accelerate.utils import set_seed
-from diffusers import DDPMScheduler
+from diffusers import DDIMScheduler
 from library import model_util
 
 import library.train_util as train_util
@@ -716,13 +716,12 @@ class NetworkTrainer:
         global_step = start_step
 
         prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
-        noise_scheduler = DDPMScheduler(
+        noise_scheduler = DDIMScheduler(
             beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
             timestep_spacing="trailing",
             prediction_type=prediction_type,
+            rescale_betas_zero_snr=args.zero_terminal_snr,
         )
-        if args.zero_terminal_snr:
-            custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
 
         if accelerator.is_main_process:
