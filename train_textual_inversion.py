@@ -496,12 +496,14 @@ class TextualInversionTrainer:
         progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
         global_step = 0
 
+        prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
         noise_scheduler = DDPMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
+            timestep_spacing="trailing",
+            prediction_type=prediction_type,
+            rescale_betas_zero_snr=args.zero_terminal_snr,
         )
         prepare_scheduler_for_custom_training(noise_scheduler, accelerator.device)
-        if args.zero_terminal_snr:
-            custom_train_functions.fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler)
 
         if accelerator.is_main_process:
             init_kwargs = {}
@@ -640,10 +642,10 @@ class TextualInversionTrainer:
                                     ],
                                     dim=-1,
                                 ) * (
-                                    pre_norm + lambda_ * (args.clip_ti_decay - pre_norm)
+                                    pre_norm + lambda_ * (0.4 - pre_norm)
                                 )
 
-                        # Let's make sure we don't update any embedding weights besides the newly added token
+                        # # Let's make sure we don't update any embedding weights besides the newly added token
                         # for text_encoder, orig_embeds_params, index_no_updates in zip(
                         #     text_encoders, orig_embeds_params_list, index_no_updates_list
                         # ):
@@ -824,9 +826,8 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--clip_ti_decay",
-        type=float,
-        default=None,
-        help="Keep the norm of the textual inversion intact (0.4 is a good starting point)",
+        action="store_true",
+        help="Keep the norm of the textual inversion intact",
     )
 
     return parser
