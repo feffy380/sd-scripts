@@ -965,13 +965,11 @@ class LoRANetwork(torch.nn.Module):
         if apply_text_encoder:
             logger.info("enable LoRA for text encoder")
         else:
-            del self.text_encoder_loras
             self.text_encoder_loras = []
 
         if apply_unet:
             logger.info("enable LoRA for U-Net")
         else:
-            del self.unet_loras
             self.unet_loras = []
 
         for lora in self.text_encoder_loras + self.unet_loras:

@@ -235,14 +235,17 @@ class NetworkTrainer:
                     data = torch.load(embeds_file, map_location="cpu")
 
                 token_string = Path(embeds_file).stem
-                embeds, _shape, num_vectors_per_token = self.create_embedding_from_data(data, token_string)
+                embeds_list, _shape, num_vectors_per_token = self.create_embedding_from_data(data, token_string)
+                if isinstance(embeds_list, dict) and "clip_l" in embeds_list and "clip_g" in embeds_list:
+                    embeds_list = [embeds_list["clip_l"], embeds_list["clip_g"]]
+                else:
+                    embeds_list = [embeds_list]
                 embedding_to_token_ids[token_string] = []
 
                 token_strings = [token_string] + [f"{token_string}{i+1}" for i in range(num_vectors_per_token - 1)]
                 logger.info(f"Loaded token strings {token_strings}")
-                for i, (tokenizer, text_encoder) in enumerate(zip(tokenizers, text_encoders)):
+                for i, (tokenizer, text_encoder, embeds) in enumerate(zip(tokenizers, text_encoders, embeds_list)):
                     num_added_tokens = tokenizer.add_tokens(token_strings)
-
                     assert (
                         num_added_tokens == num_vectors_per_token
                     ), f"The tokenizer already contains {token_string}. Please pass a different word that is not already in the tokenizer. / 指定した名前（ファイル名）のトークンが既に存在します。ファイルをリネームしてください: {embeds_file}"
@@ -259,10 +262,12 @@ class NetworkTrainer:
                     # Resize the token embeddings as we are adding new special tokens to the tokenizer
                     text_encoder.resize_token_embeddings(len(tokenizer))
 
+                    # Initialise the newly added token with the provided embeddings
+                    token_embeds = text_encoder.get_input_embeddings().weight.data
                     for token_id, embed in zip(token_ids, embeds):
-                        text_encoder.get_input_embeddings().weight.data[token_id] = embed
-                    embeddings_map[token_string] = embeds
+                        token_embeds[token_id] = embed
                     embedding_to_token_ids[token_string].append(token_ids)
+                embeddings_map[token_string] = embeds_list
 
         # データセットを準備する
         if args.dataset_class is None:
@@ -304,11 +309,11 @@ class NetworkTrainer:
                         ]
                     }
 
-            blueprint = blueprint_generator.generate(user_config, args, tokenizer=tokenizer)
+            blueprint = blueprint_generator.generate(user_config, args, tokenizer=tokenizers)
             train_dataset_group = config_util.generate_dataset_group_by_blueprint(blueprint.dataset_group)
         else:
             # use arbitrary dataset class
-            train_dataset_group = train_util.load_arbitrary_dataset(args, tokenizer)
+            train_dataset_group = train_util.load_arbitrary_dataset(args, tokenizers)
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
@@ -543,13 +548,10 @@ class NetworkTrainer:
 
         # Build list of original embeddings to freeze all but the modified embeddings
         if args.continue_inversion:
-            token_ids_list = []
-            for emb_name in embeddings_map.keys():
-                for i, sublist in enumerate(embedding_to_token_ids[emb_name]):
-                    if i >= len(token_ids_list):
-                        token_ids_list.append(sublist)
-                    else:
-                        token_ids_list[i].extend(sublist)
+            token_ids_list = [[] for _ in text_encoders]
+            for sublists in embedding_to_token_ids.values():
+                for i, sublist in enumerate(sublists):
+                    token_ids_list[i].extend(sublist)
 
             index_no_updates_list = []
             index_updates_list = []
@@ -559,6 +561,7 @@ class NetworkTrainer:
                 index_no_updates_list.append(index_no_updates)
                 index_updates = ~index_no_updates
                 index_updates_list.append(index_updates)
+
                 orig_embeds_params = accelerator.unwrap_model(t_enc).get_input_embeddings().weight.data.detach().clone()
                 orig_embeds_params_list.append(orig_embeds_params)
 
