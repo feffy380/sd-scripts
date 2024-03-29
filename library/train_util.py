@@ -1026,9 +1026,15 @@ class BaseDataset(torch.utils.data.Dataset):
         # split by resolution
         batches = []
         batch = []
+        flip_aug = False
         logger.info("checking cache validity...")
         for info in tqdm(image_infos):
             subset = self.image_to_subset[info.image_key]
+
+            # enable flipping if any subset has it enabled
+            # TODO: fix so only targeted subsets get flipped
+            if subset.flip_aug:
+                flip_aug = True
 
             if info.latents_npz is not None:  # fine tuning dataset
                 continue
@@ -1097,7 +1103,7 @@ class BaseDataset(torch.utils.data.Dataset):
         image_dataloader = torch.utils.data.DataLoader(image_dataset, shuffle=False, num_workers=8, collate_fn=custom_collate)
         for batch in tqdm(image_dataloader, smoothing=0.01, total=len(image_dataloader)):
             infos, img_tensors = batch[0]
-            cache_batch_latents(vae, cache_to_disk, infos, img_tensors, subset.flip_aug)
+            cache_batch_latents(vae, cache_to_disk, infos, img_tensors, flip_aug)
 
     # weight_dtypeを指定するとText Encoderそのもの、およひ出力がweight_dtypeになる
     # SDXLでのみ有効だが、datasetのメソッドとする必要があるので、sdxl_train_util.pyではなくこちらに実装する
@@ -2132,7 +2138,8 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
 
     try:
         npz = np.load(npz_path)
-    except:
+    except Exception as e:
+        logger.warning(f"Exception occurred while trying to load {npz_path}: {e}")
         return False
     if "latents" not in npz or "original_size" not in npz or "crop_ltrb" not in npz:  # old ver?
         return False
