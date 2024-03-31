@@ -4997,6 +4997,35 @@ def save_sd_model_on_train_end_common(
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
+def get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, device):
+    timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+
+    #TODO: if a huber loss is selected, it will use constant timesteps for each batch
+    # as. In the future there may be a smarter way
+    if args.loss_type == 'huber_scheduled':
+        timesteps = torch.randint(
+            min_timestep, max_timestep, (1,), device='cpu'
+        )
+        timestep = timesteps.item()
+
+        alpha = - math.log(args.huber_c) / max_timestep
+        huber_c = math.exp(-alpha * timestep)
+        timesteps = timesteps.repeat(b_size).to(device)
+    elif args.loss_type == 'huber':
+        # for fairness in comparison 
+        timesteps = torch.randint(
+            min_timestep, max_timestep, (1,), device='cpu'
+        )
+        timesteps = timesteps.repeat(b_size).to(device)
+        huber_c = args.huber_c
+    elif args.loss_type == 'l2':
+        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+        huber_c = 1 # may be anything, as it's not used
+    else:
+        raise NotImplementedError(f'Unknown loss type {args.loss_type}')
+    timesteps = timesteps.long()
+
+    return timesteps, huber_c
 
 def generate_timestep_weights(args, num_timesteps):
     # Adapted from https://github.com/huggingface/diffusers/tree/main/examples/text_to_image/train_text_to_image_sdxl.py (Apache 2.0 license)
@@ -5055,6 +5084,7 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
         )
 
     # Sample a random timestep for each image
+    # TODO: move timestep bias to get_timesteps_and_huber_c
     b_size = latents.shape[0]
     if args.timestep_bias_strategy == "none":
         # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
@@ -5070,30 +5100,7 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
         )
         timesteps = torch.multinomial(weights, b_size, replacement=True)
 
-    #TODO: if a huber loss is selected, it will use constant timesteps for each batch
-    # as. In the future there may be a smarter way
-    if args.loss_type == 'huber_scheduled':
-        timesteps = torch.randint(
-            0, noise_scheduler.config.num_train_timesteps, (1,), device='cpu'
-        )
-        timestep = timesteps.item()
-
-        alpha = - math.log(args.huber_c) / max_timestep
-        huber_c = math.exp(-alpha * timestep)
-        timesteps = timesteps.repeat(b_size).to(latents.device)
-    elif args.loss_type == 'huber':
-        # for fairness in comparison 
-        timesteps = torch.randint(
-            min_timestep, max_timestep, (1,), device='cpu'
-        )
-        timesteps = timesteps.repeat(b_size).to(latents.device)
-        huber_c = args.huber_c
-    elif args.loss_type == 'l2':
-        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
-        huber_c = 1 # may be anything, as it's not used
-    else:
-        raise NotImplementedError(f'Unknown loss type {args.loss_type}')
-    timesteps = timesteps.long()
+    timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
     # (this is the forward diffusion process)
