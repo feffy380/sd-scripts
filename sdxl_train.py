@@ -600,7 +600,7 @@ def train(args):
                     or args.masked_loss
                 ):
                     # do not mean over batch dimension for snr weight or scale v-pred loss
-                    loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="none")
+                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c)
                     if args.masked_loss:
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
@@ -616,7 +616,7 @@ def train(args):
 
                     loss = loss.mean()  # mean over batch dimension
                 else:
-                    loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float(), reduction="mean")
+                    loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="mean", loss_type=args.loss_type, huber_c=huber_c)
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients and args.max_grad_norm != 0.0:
