@@ -244,7 +244,7 @@ class NetworkTrainer:
 
                 token_strings = [token_string] + [f"{token_string}{i+1}" for i in range(num_vectors_per_token - 1)]
                 logger.info(f"Loaded token strings {token_strings}")
-                for i, (tokenizer, text_encoder, embeds) in enumerate(zip(tokenizers, text_encoders, embeds_list)):
+                for i, (tokenizer, t_enc, embeds) in enumerate(zip(tokenizers, text_encoders, embeds_list)):
                     num_added_tokens = tokenizer.add_tokens(token_strings)
                     assert (
                         num_added_tokens == num_vectors_per_token
@@ -260,10 +260,10 @@ class NetworkTrainer:
                     ), f"token ids is not end of tokenize: tokenizer {i+1}, {token_ids}, {len(tokenizer)}"
 
                     # Resize the token embeddings as we are adding new special tokens to the tokenizer
-                    text_encoder.resize_token_embeddings(len(tokenizer))
+                    t_enc.resize_token_embeddings(len(tokenizer))
 
                     # Initialise the newly added token with the provided embeddings
-                    token_embeds = text_encoder.get_input_embeddings().weight.data
+                    token_embeds = t_enc.get_input_embeddings().weight.data
                     for token_id, embed in zip(token_ids, embeds):
                         token_embeds[token_id] = embed
                     embedding_to_token_ids[token_string].append(token_ids)
@@ -428,13 +428,17 @@ class NetworkTrainer:
             )
             args.scale_weight_norms = False
 
-        train_unet = not args.network_train_text_encoder_only
+        train_unet = not args.network_train_text_encoder_only 
         train_text_encoder = self.is_train_text_encoder(args)
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
             info = network.load_weights(args.network_weights)
             accelerator.print(f"load network weights from {args.network_weights}: {info}")
+
+        # disable training if LR is 0 to save memory. useful for resuming LoRA with frozen TE or Unet
+        train_unet = train_unet and args.unet_lr != 0.0
+        train_text_encoder = train_text_encoder and args.text_encoder_lr != 0.0
 
         if args.gradient_checkpointing:
             unet.enable_gradient_checkpointing()
@@ -452,9 +456,9 @@ class NetworkTrainer:
             # Add embeddings params when continuing the inversion
             if args.continue_inversion:
                 # TODO: might be good to add the embedding to the LoRA module directly to continue training ("bundle_emb.{emb_name}.string_to_param.*")
-                for text_encoder in text_encoders:
+                for t_enc in text_encoders:
                     trainable_params.append({
-                        "params": text_encoder.get_input_embeddings().parameters(),
+                        "params": t_enc.get_input_embeddings().parameters(),
                         "lr": args.embedding_lr or args.text_encoder_lr or args.learning_rate,
                     })
         except TypeError:
@@ -535,7 +539,7 @@ class NetworkTrainer:
             unet = accelerator.prepare(unet)
         else:
             unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
-        if train_text_encoder:
+        if train_text_encoder or args.continue_inversion:
             if len(text_encoders) > 1:
                 text_encoder = text_encoders = [accelerator.prepare(t_enc) for t_enc in text_encoders]
             else:
@@ -580,7 +584,7 @@ class NetworkTrainer:
                 t_enc.train()
 
                 # set top parameter requires_grad = True for gradient checkpointing works
-                if train_text_encoder:
+                if train_text_encoder or args.continue_inversion:
                     t_enc.text_model.embeddings.requires_grad_(True)
         else:
             unet.eval()
@@ -892,10 +896,18 @@ class NetworkTrainer:
             if len(embeddings_map.keys()) > 0:
                 # Bundle embeddings in LoRA state dict
                 state_dict = unwrapped_nw.state_dict()
+                is_sdxl = len(next(iter(embeddings_map.values()))) == 2
                 for emb_name in embeddings_map.keys():
                     accelerator.print(f"Bundling embedding: {emb_name}")
-                    key = f"bundle_emb.{emb_name}.string_to_param.*"
-                    state_dict[key] = embeddings_map[emb_name]
+                    if is_sdxl:
+                        embs = embeddings_map[emb_name]
+                        key1 = f"bundle_emb.{emb_name}.clip_l"
+                        state_dict[key1] = embs[0]
+                        key2 = f"bundle_emb.{emb_name}.clip_g"
+                        state_dict[key2] = embs[1]
+                    else:
+                        key = f"bundle_emb.{emb_name}.string_to_param.*"
+                        state_dict[key] = embeddings_map[emb_name]
 
                 if metadata_to_save is not None and len(metadata_to_save) == 0:
                     metadata_to_save = None
@@ -943,8 +955,8 @@ class NetworkTrainer:
             current_epoch.value = epoch + 1
 
             if args.continue_inversion:
-                for text_encoder in text_encoders:
-                    text_encoder.train()
+                for t_enc in text_encoders:
+                    t_enc.train()
 
             metadata["ss_epoch"] = str(epoch + 1)
 
@@ -1061,8 +1073,8 @@ class NetworkTrainer:
 
                     # zero out gradients for all tokens we aren't training
                     if args.continue_inversion:
-                        for text_encoder, index_no_updates in zip(text_encoders, index_no_updates_list):
-                            input_embeddings_weight = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight
+                        for t_enc, index_no_updates in zip(text_encoders, index_no_updates_list):
+                            input_embeddings_weight = accelerator.unwrap_model(t_enc).get_input_embeddings().weight
                             input_embeddings_weight.grad[index_no_updates] = 0
 
                     optimizer.step()
@@ -1074,35 +1086,35 @@ class NetworkTrainer:
                         with torch.no_grad():
                             # normalize embeddings
                             if args.clip_ti_decay:
-                                for text_encoder, index_updates in zip(text_encoders, index_updates_list):
+                                for t_enc, index_updates in zip(text_encoders, index_updates_list):
                                     pre_norm = (
-                                        text_encoder.get_input_embeddings()
+                                        t_enc.get_input_embeddings()
                                         .weight[index_updates, :]
                                         .norm(dim=-1, keepdim=True)
                                     )
                                     lambda_ = min(1.0, 100 * lr_scheduler.get_last_lr()[0])
-                                    text_encoder.get_input_embeddings().weight[
+                                    t_enc.get_input_embeddings().weight[
                                         index_updates
                                     ] = torch.nn.functional.normalize(
-                                        text_encoder.get_input_embeddings().weight[index_updates, :],
+                                        t_enc.get_input_embeddings().weight[index_updates, :],
                                         dim=-1,
                                     ) * (
                                         pre_norm + lambda_ * (0.4 - pre_norm)
                                     )
 
                             # # Let's make sure we don't update any embedding weights besides the newly added token
-                            # for text_encoder, orig_embeds_params, index_no_updates in zip(
+                            # for t_enc, orig_embeds_params, index_no_updates in zip(
                             #     text_encoders, orig_embeds_params_list, index_no_updates_list
                             # ):
-                            #     input_embeddings_weight = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight
+                            #     input_embeddings_weight = accelerator.unwrap_model(t_enc).get_input_embeddings().weight
                             #     input_embeddings_weight[index_no_updates] = orig_embeds_params[index_no_updates]
 
                             # Update embeddings map (for saving)
                             # TODO: this is not optimal, might need to be refactored
                             for emb_name in embeddings_map.keys():
-                                emb_token_ids = embedding_to_token_ids[emb_name]
-                                updated_embs = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
-                                embeddings_map[emb_name] = updated_embs
+                                for i, (t_enc, emb_token_ids) in enumerate(zip(text_encoders, embedding_to_token_ids[emb_name])):
+                                    updated_embs = accelerator.unwrap_model(t_enc).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
+                                    embeddings_map[emb_name][i] = updated_embs
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(

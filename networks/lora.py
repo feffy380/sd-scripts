@@ -1049,13 +1049,13 @@ class LoRANetwork(torch.nn.Module):
                 params.extend(lora.parameters())
             return params
 
-        if self.text_encoder_loras:
+        if self.text_encoder_loras and text_encoder_lr != 0.0:
             param_data = {"params": enumerate_params(self.text_encoder_loras)}
             if text_encoder_lr is not None:
                 param_data["lr"] = text_encoder_lr
             all_params.append(param_data)
 
-        if self.unet_loras:
+        if self.unet_loras and unet_lr != 0.0:
             if self.block_lr:
                 # 学習率のグラフをblockごとにしたいので、blockごとにloraを分類
                 block_idx_to_lora = {}
