@@ -907,7 +907,7 @@ class NetworkTrainer:
                         state_dict[key2] = embs[1]
                     else:
                         key = f"bundle_emb.{emb_name}.string_to_param.*"
-                        state_dict[key] = embeddings_map[emb_name]
+                        state_dict[key] = embeddings_map[emb_name][0]
 
                 if metadata_to_save is not None and len(metadata_to_save) == 0:
                     metadata_to_save = None
