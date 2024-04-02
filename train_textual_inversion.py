@@ -314,6 +314,26 @@ class TextualInversionTrainer:
 
         self.assert_extra_args(args, train_dataset_group)
 
+        # merge network before training
+        if args.base_weights is not None:
+            import sys, importlib
+            # 差分追加学習のためにモデルを読み込む
+            sys.path.append(os.path.dirname(__file__))
+            accelerator.print("import network module:", args.network_module)
+            network_module = importlib.import_module(args.network_module)
+
+            # base_weights が指定されている場合は、指定された重みを読み込みマージする
+            for weight_path in args.base_weights:
+                multiplier = 1.0
+                accelerator.print(f"merging module: {weight_path}")
+
+                module, weights_sd = network_module.create_network_from_weights(
+                    multiplier, weight_path, vae, text_encoders, unet, for_inference=True
+                )
+                module.merge_to(text_encoders, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
+
+            accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
+
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
@@ -828,6 +848,18 @@ def setup_parser() -> argparse.ArgumentParser:
         "--clip_ti_decay",
         action="store_true",
         help="Keep the norm of the textual inversion intact",
+    )
+
+    # for merging network before training
+    parser.add_argument(
+        "--network_module", type=str, default="networks.lora", help="network module to train / 学習対象のネットワークのモジュール"
+    )
+    parser.add_argument(
+        "--base_weights",
+        type=str,
+        default=None,
+        nargs="*",
+        help="network weights to merge into the model before training / 学習前にあらかじめモデルにマージするnetworkの重みファイル",
     )
 
     return parser
