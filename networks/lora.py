@@ -1064,6 +1064,8 @@ class LoRANetwork(torch.nn.Module):
 
             params = []
             for key, group in param_groups.items():
+                if not group:
+                    continue
                 param_data = {"params": group.values()}
                 if lr is not None:
                     param_data["lr"] = lr

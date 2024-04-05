@@ -5018,32 +5018,31 @@ def save_sd_model_on_train_end_common(
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
 def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, device):
+    if args.timestep_bias_strategy == "none":
+        # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
+        min_timestep = 0 if args.min_timestep is None else args.min_timestep
+        max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
 
-    #TODO: if a huber loss is selected, it will use constant timesteps for each batch
-    # as. In the future there may be a smarter way
+        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+    else:
+        # Sample a random timestep for each image, potentially biased by the timestep weights.
+        # Biasing the timesteps allows us to spend less time training irrelevant timesteps.
+        weights = generate_timestep_weights(args, noise_scheduler.config.num_train_timesteps).to(device)
+        timesteps = torch.multinomial(weights, b_size, replacement=True)
 
     if args.loss_type == 'huber' or args.loss_type == 'smooth_l1':
-        timesteps = torch.randint(
-            min_timestep, max_timestep, (1,), device='cpu'
-        )
-        timestep = timesteps.item()
-
         if args.huber_schedule == "exponential":
-            alpha = - math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
-            huber_c = math.exp(-alpha * timestep)
+            huber_c = torch.exp(np.log(args.huber_c) * timesteps / noise_scheduler.config.num_train_timesteps)
         elif args.huber_schedule == "snr":
-            alphas_cumprod = noise_scheduler.alphas_cumprod[timestep]
+            alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=device)[timesteps]
             sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
             huber_c = (1 - args.huber_c) / (1 + sigmas)**2 + args.huber_c
         elif args.huber_schedule == "constant":
             huber_c = args.huber_c
         else:
             raise NotImplementedError(f'Unknown Huber loss schedule {args.huber_schedule}!')
-
-        timesteps = timesteps.repeat(b_size).to(device)
     elif args.loss_type == 'l2':
-        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
-        huber_c = 1 # may be anything, as it's not used
+        huber_c = None
     else:
         raise NotImplementedError(f'Unknown loss type {args.loss_type}')
     timesteps = timesteps.long()
@@ -5138,18 +5137,22 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
 
     return noise, noisy_latents, timesteps, huber_c
 
+
 # NOTE: if you're using the scheduled version, huber_c has to depend on the timesteps already
-def conditional_loss(model_pred:torch.Tensor, target:torch.Tensor, reduction:str="mean", loss_type:str="l2", huber_c:float=0.1):
-    
+def conditional_loss(model_pred: torch.Tensor, target: torch.Tensor, reduction: str = "mean", loss_type: str = "l2", huber_c: float = None):
     if loss_type == 'l2':
         loss = torch.nn.functional.mse_loss(model_pred, target, reduction=reduction)
     elif loss_type == 'huber':
+        b_size = huber_c.shape[0]
+        huber_c = huber_c.view(b_size, 1, 1, 1)
         loss = 2 * huber_c * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
             loss = torch.mean(loss)
         elif reduction == "sum":
             loss = torch.sum(loss)
     elif loss_type == 'smooth_l1':
+        b_size = huber_c.shape[0]
+        huber_c = huber_c.view(b_size, 1, 1, 1)
         loss = 2 * (torch.sqrt((model_pred - target) ** 2 + huber_c**2) - huber_c)
         if reduction == "mean":
             loss = torch.mean(loss)
@@ -5158,6 +5161,7 @@ def conditional_loss(model_pred:torch.Tensor, target:torch.Tensor, reduction:str
     else:
         raise NotImplementedError(f'Unsupported Loss Type {loss_type}')
     return loss
+
 
 def append_lr_to_logs(logs, lr_scheduler, optimizer_type, including_unet=True):
     names = []
