@@ -596,6 +596,7 @@ class TextualInversionTrainer:
                         disable_step = int(disable_step) + 1
                         if global_step == disable_step:
                             token_downsampling.remove_patch(unet)
+                            train_util.replace_unet_modules(unet, mem_eff_attn=True, xformers=False, sdpa=False)
 
                     with torch.no_grad():
                         if "latents" in batch and batch["latents"] is not None:
