@@ -34,6 +34,8 @@ from library.custom_train_functions import (
     apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
+from library.low_precision_norm import apply_low_precision_norm, undo_low_precision_norm
+from library import token_downsampling
 
 setup_logging()
 import logging
@@ -194,7 +196,9 @@ class TextualInversionTrainer:
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # モデルを読み込む
+        apply_low_precision_norm()
         model_version, text_encoder_or_list, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
+        undo_low_precision_norm()
         text_encoders = [text_encoder_or_list] if not isinstance(text_encoder_or_list, list) else text_encoder_or_list
 
         if len(text_encoders) > 1 and args.gradient_accumulation_steps > 1:
@@ -584,6 +588,15 @@ class TextualInversionTrainer:
             for step, batch in enumerate(train_dataloader):
                 current_step.value = global_step
                 with accelerator.accumulate(text_encoders[0]):
+                    # disable ToDo after some steps
+                    if args.todo_factor and args.todo_disable_after:
+                        disable_step = args.todo_disable_after
+                        if disable_step < 1.0:
+                            disable_step *= args.max_train_steps
+                        disable_step = int(disable_step) + 1
+                        if global_step == disable_step:
+                            token_downsampling.remove_patch(unet)
+
                     with torch.no_grad():
                         if "latents" in batch and batch["latents"] is not None:
                             latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)

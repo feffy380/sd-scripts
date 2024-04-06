@@ -3391,6 +3391,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
             "apply ToDo to deeper layers (lower quality for slight speed increase). SDXL only accepts 2 and 3. Recommend 1 or 2. Default 1 (or 2 for SDXL)"
         ),
     )
+    parser.add_argument(
+        "--todo_disable_after",
+        type=float,
+        help="Disable ToDo after this many steps. Value less than 1.0 is fraction of total step count",
+    )
 
     parser.add_argument(
         "--lowram",

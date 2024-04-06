@@ -41,6 +41,7 @@ from library.custom_train_functions import (
 )
 from library.utils import setup_logging, add_logging_arguments
 from library.low_precision_norm import apply_low_precision_norm, undo_low_precision_norm
+from library import token_downsampling
 
 setup_logging()
 import logging
@@ -1006,6 +1007,15 @@ class NetworkTrainer:
                 current_step.value = global_step
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
+
+                    # disable ToDo after some steps
+                    if args.todo_factor and args.todo_disable_after:
+                        disable_step = args.todo_disable_after
+                        if disable_step < 1.0:
+                            disable_step *= args.max_train_steps
+                        disable_step = int(disable_step) + 1
+                        if global_step == disable_step:
+                            token_downsampling.remove_patch(unet)
 
                     if "latents" in batch and batch["latents"] is not None:
                         latents = batch["latents"].to(device=accelerator.device, dtype=weight_dtype, non_blocking=True)
