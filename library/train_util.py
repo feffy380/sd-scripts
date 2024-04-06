@@ -5020,9 +5020,6 @@ def save_sd_model_on_train_end_common(
 def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, device):
     if args.timestep_bias_strategy == "none":
         # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
-        min_timestep = 0 if args.min_timestep is None else args.min_timestep
-        max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
-
         timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
     else:
         # Sample a random timestep for each image, potentially biased by the timestep weights.
@@ -5106,22 +5103,9 @@ def get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents):
         )
 
     # Sample a random timestep for each image
-    # TODO: move timestep bias to get_timesteps_and_huber_c
     b_size = latents.shape[0]
-    if args.timestep_bias_strategy == "none":
-        # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
-        min_timestep = 0 if args.min_timestep is None else args.min_timestep
-        max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
-
-        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=latents.device)
-    else:
-        # Sample a random timestep for each image, potentially biased by the timestep weights.
-        # Biasing the timesteps allows us to spend less time training irrelevant timesteps.
-        weights = generate_timestep_weights(args, noise_scheduler.config.num_train_timesteps).to(
-            latents.device
-        )
-        timesteps = torch.multinomial(weights, b_size, replacement=True)
-
+    min_timestep = 0 if args.min_timestep is None else args.min_timestep
+    max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
     timesteps, huber_c = get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, latents.device)
 
     # Add noise to the latents according to the noise magnitude at each timestep
