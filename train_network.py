@@ -496,6 +496,9 @@ class NetworkTrainer:
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
         # lr schedulerを用意する
+        if "schedulefree" in args.optimizer_type.lower():
+            args.lr_scheduler = "constant"
+            args.lr_warmup_steps = None
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
@@ -994,6 +997,9 @@ class NetworkTrainer:
         for epoch in range(start_epoch, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
+
+            if "schedulefree" in args.optimizer_type.lower():
+                optimizer.optimizer.train()
 
             if args.continue_inversion:
                 for t_enc in text_encoders:
