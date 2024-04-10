@@ -410,6 +410,7 @@ class TextualInversionTrainer:
         for text_encoder in text_encoders:
             trainable_params += text_encoder.get_input_embeddings().parameters()
         _, _, optimizer = train_util.get_optimizer(args, trainable_params)
+        schedulefree = "schedulefree" in args.optimizer_type.lower()
 
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
@@ -582,6 +583,8 @@ class TextualInversionTrainer:
 
             for text_encoder in text_encoders:
                 text_encoder.train()
+            if schedulefree:
+                optimizer.optimizer.train()
 
             loss_total = 0
 
@@ -657,11 +660,12 @@ class TextualInversionTrainer:
                         input_embeddings_weight.grad[index_no_updates] = 0
 
                     optimizer.step()
-                    lr_scheduler.step()
+                    if not schedulefree:
+                        lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
+                    # normalize embeddings
                     with torch.no_grad():
-                        # normalize embeddings
                         if args.clip_ti_decay:
                             for text_encoder, index_updates in zip(
                                 text_encoders, index_updates_list
@@ -683,16 +687,6 @@ class TextualInversionTrainer:
                                 ) * (
                                     pre_norm + lambda_ * (0.4 - pre_norm)
                                 )
-
-                        # # Let's make sure we don't update any embedding weights besides the newly added token
-                        # for text_encoder, orig_embeds_params, index_no_updates in zip(
-                        #     text_encoders, orig_embeds_params_list, index_no_updates_list
-                        # ):
-                        #     # if full_fp16/bf16, input_embeddings_weight is fp16/bf16, orig_embeds_params is fp32
-                        #     input_embeddings_weight = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight
-                        #     input_embeddings_weight[index_no_updates] = orig_embeds_params.to(input_embeddings_weight.dtype)[
-                        #         index_no_updates
-                        #     ]
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
@@ -716,6 +710,8 @@ class TextualInversionTrainer:
                     if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
+                            if schedulefree:
+                                optimizer.optimizer.eval()
                             updated_embs_list = []
                             for text_encoder, token_ids in zip(text_encoders, token_ids_list):
                                 updated_embs = (
@@ -763,6 +759,8 @@ class TextualInversionTrainer:
 
             accelerator.wait_for_everyone()
 
+            if schedulefree:
+                optimizer.optimizer.eval()
             updated_embs_list = []
             for text_encoder, token_ids in zip(text_encoders, token_ids_list):
                 updated_embs = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[token_ids].data.detach().clone()
