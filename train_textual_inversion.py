@@ -406,11 +406,23 @@ class TextualInversionTrainer:
 
         # 学習に必要なクラスを準備する
         accelerator.print("prepare optimizer, data loader etc.")
+
+        schedulefree = "schedulefree" in args.optimizer_type.lower()
+        if schedulefree:
+            args.lr_scheduler = "constant"
+            if args.lr_warmup_steps:
+                if args.optimizer_args is None:
+                    args.optimizer_args = []
+                warmup_steps = args.lr_warmup_steps
+                if warmup_steps < 1.0:
+                    warmup_steps = int(warmup_steps * args.max_train_steps)
+                args.optimizer_args.append(f"warmup_steps={warmup_steps}")
+                args.lr_warmup_steps = None
+
         trainable_params = []
         for text_encoder in text_encoders:
             trainable_params += text_encoder.get_input_embeddings().parameters()
         _, _, optimizer = train_util.get_optimizer(args, trainable_params)
-        schedulefree = "schedulefree" in args.optimizer_type.lower()
 
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
@@ -583,12 +595,12 @@ class TextualInversionTrainer:
 
             for text_encoder in text_encoders:
                 text_encoder.train()
-            if schedulefree:
-                optimizer.optimizer.train()
 
             loss_total = 0
 
             for step, batch in enumerate(train_dataloader):
+                if schedulefree:
+                    optimizer.optimizer.train()
                 current_step.value = global_step
                 with accelerator.accumulate(text_encoders[0]):
                     # disable ToDo after some steps

@@ -450,6 +450,18 @@ class NetworkTrainer:
         # 学習に必要なクラスを準備する
         accelerator.print("prepare optimizer, data loader etc.")
 
+        schedulefree = "schedulefree" in args.optimizer_type.lower()
+        if schedulefree:
+            args.lr_scheduler = "constant"
+            if args.lr_warmup_steps:
+                if args.optimizer_args is None:
+                    args.optimizer_args = []
+                warmup_steps = args.lr_warmup_steps
+                if warmup_steps < 1.0:
+                    warmup_steps = int(warmup_steps * args.max_train_steps)
+                args.optimizer_args.append(f"warmup_steps={warmup_steps}")
+                args.lr_warmup_steps = None
+
         # 後方互換性を確保するよ
         try:
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr, args.learning_rate)
@@ -468,7 +480,6 @@ class NetworkTrainer:
             trainable_params = network.prepare_optimizer_params(args.text_encoder_lr, args.unet_lr)
 
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
-        schedulefree = "schedulefree" in args.optimizer_type.lower()
 
         # dataloaderを準備する
         # DataLoaderのプロセス数：0 は persistent_workers が使えないので注意
@@ -497,9 +508,6 @@ class NetworkTrainer:
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
         # lr schedulerを用意する
-        if "schedulefree" in args.optimizer_type.lower():
-            args.lr_scheduler = "constant"
-            args.lr_warmup_steps = None
         lr_scheduler = train_util.get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
         # 実験的機能：勾配も含めたfp16/bf16学習を行う　モデル全体をfp16/bf16にする
@@ -1015,14 +1023,14 @@ class NetworkTrainer:
             if args.continue_inversion:
                 for t_enc in text_encoders:
                     t_enc.train()
-            if schedulefree:
-                optimizer.optimizer.train()
 
             metadata["ss_epoch"] = str(epoch + 1)
 
             accelerator.unwrap_model(network).on_epoch_start(text_encoder, unet)
 
             for step, batch in enumerate(train_dataloader):
+                if schedulefree:
+                    optimizer.optimizer.train()
                 current_step.value = global_step
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
