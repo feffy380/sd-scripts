@@ -226,7 +226,12 @@ class NetworkTrainer:
         embeddings_map = {}
         embedding_to_token_ids = {}
         if len(args.embeddings) > 0:
-            for embeds_file in args.embeddings:
+            if not args.token_strings:
+                args.token_strings = [Path(embeds_file).stem for embeds_file in args.embeddings]
+            if len(args.token_strings) != len(args.embeddings):
+                raise ValueError(f"token_strings must have a name for each embedding. Got {len(args.token_strings)}/{len(args.embeddings)}")
+
+            for embeds_file, token_string in zip(args.embeddings, args.token_strings):
                 if model_util.is_safetensors(embeds_file):
                     from safetensors.torch import load_file
 
@@ -234,7 +239,6 @@ class NetworkTrainer:
                 else:
                     data = torch.load(embeds_file, map_location="cpu")
 
-                token_string = Path(embeds_file).stem
                 embeds_list, _shape, num_vectors_per_token = self.create_embedding_from_data(data, token_string)
                 if isinstance(embeds_list, dict) and "clip_l" in embeds_list and "clip_g" in embeds_list:
                     embeds_list = [embeds_list["clip_l"], embeds_list["clip_g"]]
@@ -1400,6 +1404,12 @@ def setup_parser() -> argparse.ArgumentParser:
         default=[],
         nargs="*",
         help="Embeddings files of Textual Inversion / Textual Inversionのembeddings",
+    )
+    parser.add_argument(
+        "--token_strings",
+        type=str,
+        nargs="*",
+        help="Names to use for each embedding instead of filename",
     )
     parser.add_argument("--continue_inversion", action="store_true", help="Continue the textual inversion when training the LoRA")
     parser.add_argument("--embedding_lr", type=float, default=None, help="Learning rate used when continuing the textual inversion")
