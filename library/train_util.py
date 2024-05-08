@@ -5072,34 +5072,6 @@ def save_sd_model_on_train_end_common(
         if args.huggingface_repo_id is not None:
             huggingface_util.upload(args, out_dir, "/" + model_name, force_sync_upload=True)
 
-def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, device):
-    if args.timestep_bias_strategy == "none":
-        # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
-        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
-    else:
-        # Sample a random timestep for each image, potentially biased by the timestep weights.
-        # Biasing the timesteps allows us to spend less time training irrelevant timesteps.
-        weights = generate_timestep_weights(args, noise_scheduler.config.num_train_timesteps).to(device)
-        timesteps = torch.multinomial(weights, b_size, replacement=True)
-
-    if args.loss_type == 'huber' or args.loss_type == 'smooth_l1':
-        if args.huber_schedule == "exponential":
-            huber_c = torch.exp(np.log(args.huber_c) * timesteps / noise_scheduler.config.num_train_timesteps)
-        elif args.huber_schedule == "snr":
-            alphas_cumprod = noise_scheduler.alphas_cumprod.to(device=device)[timesteps]
-            sigmas = ((1.0 - alphas_cumprod) / alphas_cumprod) ** 0.5
-            huber_c = (1 - args.huber_c) / (1 + sigmas)**2 + args.huber_c
-        elif args.huber_schedule == "constant":
-            huber_c = args.huber_c
-        else:
-            raise NotImplementedError(f'Unknown Huber loss schedule {args.huber_schedule}!')
-    elif args.loss_type == 'l2':
-        huber_c = None
-    else:
-        raise NotImplementedError(f'Unknown loss type {args.loss_type}')
-    timesteps = timesteps.long()
-
-    return timesteps, huber_c
 
 def generate_timestep_weights(args, num_timesteps):
     # Adapted from https://github.com/huggingface/diffusers/tree/main/examples/text_to_image/train_text_to_image_sdxl.py (Apache 2.0 license)
