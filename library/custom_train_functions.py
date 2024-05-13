@@ -493,6 +493,7 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
     if noise_offset is None:
         return noise
     if adaptive_noise_scale is not None:
+        raise NotImplemented
         # latent shape: (batch_size, channels, height, width)
         # abs mean value for each channel
         latent_mean = torch.abs(latents.mean(dim=(2, 3), keepdim=True))
@@ -501,7 +502,7 @@ def apply_noise_offset(latents, noise, noise_offset, adaptive_noise_scale):
         noise_offset = noise_offset + adaptive_noise_scale * latent_mean
         noise_offset = torch.clamp(noise_offset, 0.0, None)  # in case of adaptive noise scale is negative
 
-    noise = noise + noise_offset * torch.randn((latents.shape[0], latents.shape[1], 1, 1), device=latents.device)
+    noise = noise + noise_offset * torch.randn((latents.shape[0] // 2, latents.shape[1], 1, 1), device=latents.device).repeat(2, 1, 1, 1)
     return noise
 
 

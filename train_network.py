@@ -1061,6 +1061,8 @@ class NetworkTrainer:
 
                     if "latents" in batch and batch["latents"] is not None:
                         latents = batch["latents"].to(device=accelerator.device, dtype=weight_dtype, non_blocking=True)
+                        # (batch_size, 2*channels, h, w) -> (2*batch_size, channels, h, w)
+                        latents = torch.cat(latents.chunk(2, dim=1))
                     else:
                         with torch.no_grad():
                             # latentに変換
@@ -1098,6 +1100,7 @@ class NetworkTrainer:
                             text_encoder_conds = self.get_text_cond(
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
+                    text_encoder_conds = text_encoder_conds.repeat(2, *([1] * len(text_encoder_conds.shape[1:])))
 
                     with torch.no_grad():
                         latents = latents * self.vae_scale_factor
@@ -1137,15 +1140,29 @@ class NetworkTrainer:
                     else:
                         target = noise
 
-                    loss = train_util.conditional_loss(
+                    model_losses = train_util.conditional_loss(
                         noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
                     )
                     if args.masked_loss:
-                        loss = apply_masked_loss(loss, batch)
-                    loss = loss.mean([1, 2, 3])
+                        model_losses = apply_masked_loss(model_losses, batch)
+
+                    # ODDS ratio loss
+                    # In the diffusion formulation, we're assuming that the MSE loss
+                    # approximates the logp.
+                    model_losses = model_losses.mean(dim=list(range(1, len(model_losses.shape))))
+                    model_losses_w, model_losses_l = model_losses.chunk(2)
+                    log_odds = model_losses_w - model_losses_l
+
+                    # Ratio loss.
+                    ratio = torch.nn.functional.logsigmoid(log_odds)
+                    ratio_losses = args.beta_orpo * ratio
+
+                    # Full ORPO loss
+                    loss = model_losses_w - ratio_losses
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights
+                    timesteps = timesteps.chunk(2)[0]
 
                     if args.min_snr_gamma:
                         loss = apply_snr_weight(loss, timesteps, noise_scheduler, args.min_snr_gamma, args.v_parameterization)
