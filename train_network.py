@@ -1100,7 +1100,7 @@ class NetworkTrainer:
                             text_encoder_conds = self.get_text_cond(
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
-                    text_encoder_conds = text_encoder_conds.repeat(2, *([1] * len(text_encoder_conds.shape[1:])))
+                    # text_encoder_conds = text_encoder_conds.repeat(2, *([1] * len(text_encoder_conds.shape[1:])))
 
                     with torch.no_grad():
                         latents = latents * self.vae_scale_factor
@@ -1123,16 +1123,20 @@ class NetworkTrainer:
 
                     # Predict the noise residual
                     with accelerator.autocast():
-                        noise_pred = self.call_unet(
-                            args,
-                            accelerator,
-                            unet,
-                            noisy_latents.requires_grad_(train_unet),
-                            timesteps,
-                            text_encoder_conds,
-                            batch,
-                            weight_dtype,
-                        )
+                        noise_preds = []
+                        for nl, ts in zip(noisy_latents.chunk(2), timesteps.chunk(2)):
+                            noise_pred = self.call_unet(
+                                args,
+                                accelerator,
+                                unet,
+                                nl.requires_grad_(train_unet),
+                                ts,
+                                text_encoder_conds,
+                                batch,
+                                weight_dtype,
+                            )
+                            noise_preds.append(noise_pred)
+                        noise_pred = torch.cat(noise_preds)
 
                     if args.v_parameterization:
                         # v-parameterization training
@@ -1151,14 +1155,14 @@ class NetworkTrainer:
                     # approximates the logp.
                     model_losses = model_losses.mean(dim=list(range(1, len(model_losses.shape))))
                     model_losses_w, model_losses_l = model_losses.chunk(2)
-                    log_odds = model_losses_w - model_losses_l
+                    # flip sign because we're using MSE loss instead of odds
+                    log_odds = -(model_losses_w - model_losses_l)
 
                     # Ratio loss.
-                    ratio = torch.nn.functional.logsigmoid(log_odds)
-                    ratio_losses = args.orpo_weight * ratio
+                    odds_ratio_loss = -torch.nn.functional.logsigmoid(log_odds)
 
                     # Full ORPO loss
-                    loss = model_losses_w - ratio_losses
+                    loss = model_losses_w + args.orpo_weight * odds_ratio_loss
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights
@@ -1263,6 +1267,9 @@ class NetworkTrainer:
 
                 if args.logging_dir is not None:
                     logs = self.generate_step_logs(args, current_loss, avr_loss, lr_scheduler, keys_scaled, mean_norm, maximum_norm)
+                    logs["loss/chosen"] = model_losses_w.mean().detach().item()
+                    logs["loss/rejected"] = model_losses_l.mean().detach().item()
+                    logs["log_odds"] = log_odds.mean().detach().item()
                     accelerator.log(logs, step=global_step)
 
                 if global_step >= args.max_train_steps:
