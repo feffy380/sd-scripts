@@ -3452,10 +3452,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="The huber loss parameter. Only used if one of the huber loss modes (huber or smooth l1) is selected with loss_type. default is 0.1 / Huber損失のパラメータ。loss_typeがhuberまたはsmooth l1の場合に有効。デフォルトは0.1",
     )
     parser.add_argument(
-        "--beta_orpo",
+        "--orpo_weight",
         type=float,
         default=0.1,
-        help="ORPO contribution factor",
+        help="ORPO loss weight",
     )
 
     parser.add_argument(

@@ -1155,7 +1155,7 @@ class NetworkTrainer:
 
                     # Ratio loss.
                     ratio = torch.nn.functional.logsigmoid(log_odds)
-                    ratio_losses = args.beta_orpo * ratio
+                    ratio_losses = args.orpo_weight * ratio
 
                     # Full ORPO loss
                     loss = model_losses_w - ratio_losses
