@@ -2214,7 +2214,7 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
 
 
 def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
-    expected_latents_size = (reso[1] // 8, reso[0] // 8)  # bucket_resoはWxHなので注意
+    expected_latents_size = (4, reso[1] // 8, reso[0] // 8)  # bucket_resoはWxHなので注意
 
     if not os.path.exists(npz_path):
         return False
@@ -2226,13 +2226,13 @@ def is_disk_cached_latents_is_expected(reso, npz_path: str, flip_aug: bool):
         return False
     if "latents" not in npz or "original_size" not in npz or "crop_ltrb" not in npz:  # old ver?
         return False
-    if npz["latents"].shape[1:3] != expected_latents_size:
+    if npz["latents"].shape[:3] != expected_latents_size:
         return False
 
     if flip_aug:
         if "latents_flipped" not in npz:
             return False
-        if npz["latents_flipped"].shape[1:3] != expected_latents_size:
+        if npz["latents_flipped"].shape[:3] != expected_latents_size:
             return False
 
     return True
@@ -2500,12 +2500,14 @@ def cache_batch_latents(
     """
     img_tensors = img_tensors.to(device=vae.device, dtype=vae.dtype)
     with torch.no_grad():
-        latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+        # latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+        latents = vae.encode(img_tensors).latent_dist.mean.to("cpu")
 
     if flip_aug:
         img_tensors = torch.flip(img_tensors, dims=[3])
         with torch.no_grad():
-            flipped_latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+            # flipped_latents = vae.encode(img_tensors).latent_dist.sample().to("cpu")
+            flipped_latents = vae.encode(img_tensors).latent_dist.mean.to("cpu")
     else:
         flipped_latents = [None] * len(latents)
 
