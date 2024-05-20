@@ -22,6 +22,12 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
 
     noise_scheduler.all_snr = all_snr.to(device)
 
+    # learned weighting
+    x = noise_scheduler.alphas_cumprod
+    learned_weights = -0.858 * (-1.59 * x - 0.924) * torch.log((2.25 - 2.19 * x) * (7.38 * x + 0.0422)) + 3.79
+    learned_weights /= learned_weights.mean()
+    noise_scheduler.learned_weights = learned_weights.to(device)
+
 
 def fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler):
     # fix beta: zero terminal SNR
@@ -113,6 +119,12 @@ def apply_debiased_estimation(loss, timesteps, noise_scheduler):
     return loss
 
 
+def apply_learned_weight(loss, timesteps, noise_scheduler):
+    weight = noise_scheduler.learned_weights[timesteps]
+    loss *= weight
+    return loss
+
+
 # TODO train_utilと分散しているのでどちらかに寄せる
 
 
@@ -138,6 +150,11 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
         "--debiased_estimation_loss",
         action="store_true",
         help="debiased estimation loss / debiased estimation loss",
+    )
+    parser.add_argument(
+        "--learned_timestep_weighting",
+        action="store_true",
+        help="drhead's learned timestep weighting"
     )
     if support_weighted_captions:
         parser.add_argument(
