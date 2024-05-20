@@ -1218,7 +1218,8 @@ class BaseDataset(torch.utils.data.Dataset):
         nh = int(height * scale + 0.5)
         nw = int(width * scale + 0.5)
         assert nh >= self.height and nw >= self.width, f"internal error. small scale {scale}, {width}*{height}"
-        image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
+        image = image.resize((nw, nh), Image.Resampling.LANCZOS)
+        # image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_AREA)
         face_cx = int(face_cx * scale + 0.5)
         face_cy = int(face_cy * scale + 0.5)
         height, width = nh, nw
@@ -2108,9 +2109,10 @@ class ControlNetDataset(BaseDataset):
                 assert (
                     cond_img.shape[0] == original_size_hw[0] and cond_img.shape[1] == original_size_hw[1]
                 ), f"size of conditioning image is not match / 画像サイズが合いません: {image_info.absolute_path}"
-                cond_img = cv2.resize(
-                    cond_img, image_info.resized_size, interpolation=cv2.INTER_AREA
-                )  # INTER_AREAでやりたいのでcv2でリサイズ
+                cond_img = cond_img.resize(image_info.resized_size, Image.Resampling.LANCZOS)
+                # cond_img = cv2.resize(
+                #     cond_img, image_info.resized_size, interpolation=cv2.INTER_AREA
+                # )  # INTER_AREAでやりたいのでcv2でリサイズ
 
                 # TODO support random crop
                 # 現在サポートしているcropはrandomではなく中央のみ
@@ -2124,9 +2126,10 @@ class ControlNetDataset(BaseDataset):
                 # ), f"image size is small / 画像サイズが小さいようです: {image_info.absolute_path}"
                 # resize to target
                 if cond_img.shape[0] != target_size_hw[0] or cond_img.shape[1] != target_size_hw[1]:
-                    cond_img = cv2.resize(
-                        cond_img, (int(target_size_hw[1]), int(target_size_hw[0])), interpolation=cv2.INTER_LANCZOS4
-                    )
+                    cond_img = cond_img.resize((int(target_size_hw[1]), int(target_size_hw[0])), Image.Resampling.LANCZOS)
+                    # cond_img = cv2.resize(
+                    #     cond_img, (int(target_size_hw[1]), int(target_size_hw[0])), interpolation=cv2.INTER_LANCZOS4
+                    # )
 
             if flipped:
                 cond_img = cond_img[:, ::-1, :].copy()  # copy to avoid negative stride
@@ -2462,7 +2465,8 @@ def trim_and_resize_if_required(
 
     if image_width != resized_size[0] or image_height != resized_size[1]:
         # リサイズする
-        image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
+        image = image.resize(resized_size, Image.Resampling.LANCZOS)
+        # image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
 
     image_height, image_width = image.shape[0:2]
 
