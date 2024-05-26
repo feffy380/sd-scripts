@@ -1105,15 +1105,15 @@ class BaseDataset(torch.utils.data.Dataset):
                 images = []
                 images_l = []
                 for info in image_infos:
-                    image = load_image(info.absolute_path) if info.image is None else np.array(info.image, np.uint8)
-                    image_l = load_image(info.absolute_path_l) if info.image_l is None else np.array(info.image_l, np.uint8)
+                    image = load_image(info.absolute_path) if info.image is None else info.image
+                    image_l = load_image(info.absolute_path_l) if info.image_l is None else info.image_l
                     # TODO 画像のメタデータが壊れていて、メタデータから割り当てたbucketと実際の画像サイズが一致しない場合があるのでチェック追加要
-                    image, original_size, crop_ltrb = trim_and_resize_if_required(self.random_crop, image, info.bucket_reso, info.resized_size)
+                    image, original_size, crop_ltrb = trim_and_resize_if_required_pil(self.random_crop, image, info.bucket_reso, info.resized_size)
                     image = IMAGE_TRANSFORMS(image)
                     images.append(image)
 
                     # prepare non-preferred image
-                    image_l, _, _ = trim_and_resize_if_required(self.random_crop, image_l, info.bucket_reso, info.resized_size_l)
+                    image_l, _, _ = trim_and_resize_if_required_pil(self.random_crop, image_l, info.bucket_reso, info.resized_size_l)
                     image_l = IMAGE_TRANSFORMS(image_l)
                     images_l.append(image_l)
 
@@ -2473,8 +2473,9 @@ def load_image(image_path):
     image = Image.open(image_path)
     if not image.mode == "RGB":
         image = image.convert("RGB")
-    img = np.array(image, np.uint8)
-    return img
+    # img = np.array(image, np.uint8)
+    # return img
+    return image
 
 
 # 画像を読み込む。戻り値はnumpy.ndarray,(original width, original height),(crop left, crop top, crop right, crop bottom)
@@ -2488,6 +2489,41 @@ def trim_and_resize_if_required(
         # リサイズする
         image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
 
+    image_height, image_width = image.shape[0:2]
+
+    if image_width > reso[0]:
+        trim_size = image_width - reso[0]
+        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+        # logger.info(f"w {trim_size} {p}")
+        image = image[:, p : p + reso[0]]
+    if image_height > reso[1]:
+        trim_size = image_height - reso[1]
+        p = trim_size // 2 if not random_crop else random.randint(0, trim_size)
+        # logger.info(f"h {trim_size} {p})
+        image = image[p : p + reso[1]]
+
+    # random cropの場合のcropされた値をどうcrop left/topに反映するべきか全くアイデアがない
+    # I have no idea how to reflect the cropped value in crop left/top in the case of random crop
+
+    crop_ltrb = BucketManager.get_crop_ltrb(reso, original_size)
+
+    assert image.shape[0] == reso[1] and image.shape[1] == reso[0], f"internal error, illegal trimmed size: {image.shape}, {reso}"
+    return image, original_size, crop_ltrb
+
+
+def trim_and_resize_if_required_pil(
+    random_crop: bool, image: Image.Image, reso, resized_size: Tuple[int, int]
+) -> Tuple[np.ndarray, Tuple[int, int], Tuple[int, int, int, int]]:
+    # image_height, image_width = image.shape[0:2]
+    image_width, image_height = image.size
+    original_size = (image_width, image_height)  # size before resize
+
+    if image_width != resized_size[0] or image_height != resized_size[1]:
+        # リサイズする
+        # image = cv2.resize(image, resized_size, interpolation=cv2.INTER_AREA)  # INTER_AREAでやりたいのでcv2でリサイズ
+        image = image.resize(resized_size, resample=Image.Resampling.LANCZOS)
+
+    image = np.array(image, np.uint8)
     image_height, image_width = image.shape[0:2]
 
     if image_width > reso[0]:
