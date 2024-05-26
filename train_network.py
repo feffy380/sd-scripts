@@ -1057,7 +1057,21 @@ class NetworkTrainer:
                         disable_step = int(disable_step) + 1
                         if global_step == disable_step:
                             token_downsampling.remove_patch(unet)
-                            train_util.replace_unet_modules(unet, mem_eff_attn=True, xformers=False, sdpa=False)
+
+                            # according to TI example in Diffusers, train is required
+                            unet.enable_gradient_checkpointing()
+                            unet.train()
+                            for t_enc in text_encoders:
+                                t_enc.gradient_checkpointing_enable()
+                                t_enc.train()
+                                # set top parameter requires_grad = True for gradient checkpointing works
+                                if train_text_encoder or args.continue_inversion:
+                                    t_enc.text_model.embeddings.requires_grad_(True)
+                            del t_enc
+                            network.enable_gradient_checkpointing()  # may have no effect
+
+                            if args.todo_mem_eff_attn:
+                                train_util.replace_unet_modules(unet, mem_eff_attn=True, xformers=False, sdpa=False)
 
                     if "latents" in batch and batch["latents"] is not None:
                         latents = batch["latents"].to(device=accelerator.device, dtype=weight_dtype, non_blocking=True)

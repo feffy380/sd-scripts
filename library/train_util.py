@@ -3402,6 +3402,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="Disable ToDo after this many steps. Value less than 1.0 is fraction of total step count",
     )
     parser.add_argument(
+        "--todo_mem_eff_attn",
+        action="store_true",
+        help="enable memory-efficient attention after disabling ToDo",
+    )
+    parser.add_argument(
         "--loss_type",
         type=str,
         default="l2",
