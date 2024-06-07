@@ -1112,7 +1112,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
             # check disk cache exists and size of latents
             if cache_to_disk:
-                info.latents_npz = os.path.splitext(info.absolute_path)[0] + ".npz"
+                res = self.width if (self.width == self.height) else f"{self.width}x{self.height}"
+                suffix = f"{res}-XL" if (len(self.tokenizers) > 1) else res
+                info.latents_npz = os.path.splitext(info.absolute_path)[0] + f"-{suffix}.npz"
                 if not is_main_process:  # store to info only
                     continue
 
