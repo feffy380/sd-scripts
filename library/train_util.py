@@ -2552,9 +2552,10 @@ def cache_batch_latents(
         flipped_latents = [None] * len(latents)
 
     for info, latent, flipped_latent in zip(image_infos, latents, flipped_latents):
-        # check NaN
-        if torch.isnan(latents).any() or (flipped_latent is not None and torch.isnan(flipped_latent).any()):
-            raise RuntimeError(f"NaN detected in latents: {info.absolute_path}")
+        # NOTE: disabled for speed
+        # # check NaN
+        # if torch.isnan(latents).any() or (flipped_latent is not None and torch.isnan(flipped_latent).any()):
+        #     raise RuntimeError(f"NaN detected in latents: {info.absolute_path}")
 
         if cache_to_disk:
             save_latents_to_disk(info.latents_npz, latent, info.latents_original_size, info.latents_crop_ltrb, flipped_latent)
