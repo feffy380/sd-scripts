@@ -4617,6 +4617,35 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
                 lr_lambda=lr_lambda,
         )
 
+    if name.upper() == "REXR":
+        def RexWithRestarts(
+            optimizer: Optimizer,
+            warmup_steps: int,
+            cycle_steps: int,
+            max_lr: float = 1.0,
+            min_lr: float = 0.01,
+            last_epoch: int = -1,
+        ):
+            def lr_lambda(current_step: int):
+                if current_step < warmup_steps:
+                    return current_step / max(1, warmup_steps)
+                if current_step / cycle_steps < 1.0:
+                    cycle_progress = (current_step - warmup_steps) / (cycle_steps - warmup_steps)
+                else:
+                    cycle_step = current_step % cycle_steps
+                    cycle_progress = cycle_step / cycle_steps
+                return min_lr + (max_lr - min_lr) * ((1 - cycle_progress) / (1 - cycle_progress / 2))
+
+            return torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lr_lambda, last_epoch=last_epoch)
+
+        cycle_steps = num_training_steps / num_cycles
+        return RexWithRestarts(
+            optimizer,
+            warmup_steps=num_warmup_steps,
+            cycle_steps=cycle_steps,
+            **lr_scheduler_kwargs,
+        )
+
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
