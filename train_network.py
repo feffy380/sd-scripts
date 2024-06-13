@@ -122,7 +122,7 @@ class NetworkTrainer:
     def cache_text_encoder_outputs_if_needed(
         self, args, accelerator, unet, vae, tokenizers, text_encoders, data_loader, weight_dtype
     ):
-        raise NotImplemented
+        return
         # for t_enc in text_encoders:
         #     t_enc.to(accelerator.device, dtype=weight_dtype)
 
@@ -388,9 +388,9 @@ class NetworkTrainer:
         # 必要ならテキストエンコーダーの出力をキャッシュする: Text Encoderはcpuまたはgpuへ移される
         # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
         # not supported and we can't set text encoder to fp16
-        # self.cache_text_encoder_outputs_if_needed(
-        #     args, accelerator, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
-        # )
+        self.cache_text_encoder_outputs_if_needed(
+            args, accelerator, unet, vae, tokenizers, text_encoders, train_dataset_group, weight_dtype
+        )
 
         # prepare network
         net_kwargs = {}
@@ -511,8 +511,8 @@ class NetworkTrainer:
             shuffle=True,
             collate_fn=collator,
             num_workers=n_workers,
-            persistent_workers=args.persistent_data_loader_workers,
-            prefetch_factor=3,
+            persistent_workers=args.persistent_data_loader_workers and n_workers > 0,
+            prefetch_factor=3 if n_workers > 0 else None,
         )
 
         # 学習ステップ数を計算する
