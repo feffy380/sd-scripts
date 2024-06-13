@@ -816,7 +816,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
         input_ids = tokenizer(
             caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # infinite token mod
-            # caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # default. always pad to token limit
         ).input_ids
         return input_ids
 
@@ -875,26 +874,29 @@ class BaseDataset(torch.utils.data.Dataset):
         # find comma indices
         comma_indices = (input_ids == comma_token).nonzero(as_tuple=True)[0].tolist()
         chunk_size = tokenizer.model_max_length - 2
-        iids_list = [input_ids[0].unsqueeze(0)]  # start with BOS token
         # loop over indices to build chunks (ignore BOS and EOS)
         comma_indices.append(input_ids.shape[0] - 2)  # virtual end comma
         prev_comma = 0
+        iids_list = []
         for i in range(len(comma_indices)):
             # find last comma before chunk_length
             if (i+1 < len(comma_indices)) and (comma_indices[i+1] - prev_comma <= chunk_size):
                 continue
             ids_chunk = input_ids[prev_comma+1 : comma_indices[i]+1]
             # pad with tokenizer.pad_token_id up to chunk length
-            if ids_chunk.shape[0] < chunk_size:
+            if ids_chunk.shape[0] < chunk_size and i+1 < len(comma_indices):
                 ids_chunk = torch.cat((
                     ids_chunk,
                     torch.full((chunk_size - ids_chunk.shape[0],), tokenizer.pad_token_id)
                 ))
             iids_list.append(ids_chunk)
             prev_comma = comma_indices[i]
+        if not self.infinite_tokens:
+            max_chunks = self.max_token_length // chunk_size
+            iids_list = iids_list[:max_chunks]
         # concat chunks and append EOS token
-        # append EOS token and concatenate chunks
-        iids_list.append(input_ids[-1].unsqueeze(0))
+        # insert BOS and EOS tokens and concatenate chunks
+        iids_list = [input_ids[0].unsqueeze(0)] + iids_list + [input_ids[-1].unsqueeze(0)]
         input_ids = torch.cat(iids_list)
         return input_ids
 
@@ -902,7 +904,9 @@ class BaseDataset(torch.utils.data.Dataset):
         # pad input_ids to longest in batch
         input_ids_list = [self.pad_to_comma_token(i, tokenizer) for i in input_ids_list]
         max_standard_tokens = tokenizer.model_max_length - 2
-        max_len = max(i.shape[-1] for i in input_ids_list) - 2
+        max_len = self.max_token_length
+        if self.infinite_tokens:
+            max_len = max(i.shape[-1] for i in input_ids_list) - 2
         num_chunks = max(math.ceil(max_len / max_standard_tokens), 1)
         len_input = max_standard_tokens * num_chunks + 2
 
@@ -913,7 +917,8 @@ class BaseDataset(torch.utils.data.Dataset):
             return_tensors="pt"
         ).input_ids.unsqueeze(1)
         input_ids_list = [self.chunk_input_ids(input_ids, tokenizer) for input_ids in input_ids_list]
-        return torch.stack(input_ids_list)
+        padded_input_ids = torch.stack(input_ids_list)
+        return padded_input_ids
 
     def register_image(self, info: ImageInfo, subset: BaseSubset):
         self.image_data[info.image_key] = info
@@ -1035,7 +1040,7 @@ class BaseDataset(torch.utils.data.Dataset):
             [
                 not (
                     subset.caption_dropout_rate > 0
-                    or subset.shuffle_caption
+                    # or subset.shuffle_caption  # cache shuffled
                     or subset.token_warmup_step > 0
                     or subset.caption_tag_dropout_rate > 0
                 )
@@ -1193,8 +1198,10 @@ class BaseDataset(torch.utils.data.Dataset):
         batch = []
         batches = []
         for info in image_infos_to_cache:
-            input_ids1 = self.get_input_ids(info.caption, tokenizers[0])
-            input_ids2 = self.get_input_ids(info.caption, tokenizers[1])
+            subset = self.image_to_subset[info.image_key]
+            caption = self.process_caption(subset, info.caption)
+            input_ids1 = self.get_input_ids(caption, tokenizers[0])
+            input_ids2 = self.get_input_ids(caption, tokenizers[1])
             batch.append((info, input_ids1, input_ids2))
 
             if len(batch) >= self.batch_size:
@@ -1208,8 +1215,10 @@ class BaseDataset(torch.utils.data.Dataset):
         logger.info("caching text encoder outputs...")
         for batch in tqdm(batches):
             infos, input_ids1, input_ids2 = zip(*batch)
-            input_ids1 = torch.stack(input_ids1, dim=0)
-            input_ids2 = torch.stack(input_ids2, dim=0)
+            # input_ids1 = torch.stack(input_ids1, dim=0)
+            # input_ids2 = torch.stack(input_ids2, dim=0)
+            input_ids1 = self.pad_batch_tokens(input_ids1, self.tokenizers[0])
+            input_ids2 = self.pad_batch_tokens(input_ids2, self.tokenizers[1])
             cache_batch_text_encoder_outputs(
                 infos, tokenizers, text_encoders, self.max_token_length, cache_to_disk, input_ids1, input_ids2, weight_dtype
             )
