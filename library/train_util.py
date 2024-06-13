@@ -609,6 +609,10 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.tokenizers = tokenizer if isinstance(tokenizer, list) else [tokenizer]
 
+        self.infinite_tokens = False
+        if max_token_length == -1:
+            self.infinite_tokens = True
+            max_token_length = 900  # failsafe against extremely large captions
         self.max_token_length = max_token_length
         # width/height is used when enable_bucket==False
         self.width, self.height = (None, None) if resolution is None else resolution
@@ -856,10 +860,14 @@ class BaseDataset(torch.utils.data.Dataset):
         if tokenizer is None:
             tokenizer = self.tokenizers[0]
 
-        input_ids = tokenizer(
-            caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # infinite token mod
-            # caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # default. always pad to token limit
-        ).input_ids
+        if self.infinite_tokens:
+            input_ids = tokenizer(
+                caption, padding=True, truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # infinite token mod
+            ).input_ids
+        else:
+            input_ids = tokenizer(
+                caption, padding="max_length", truncation=True, max_length=self.tokenizer_max_length, return_tensors="pt"  # default. always pad to token limit
+            ).input_ids
         return input_ids
 
     def chunk_input_ids(self, input_ids, tokenizer=None):
