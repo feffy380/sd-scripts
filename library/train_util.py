@@ -601,6 +601,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self,
         tokenizer: Union[CLIPTokenizer, List[CLIPTokenizer]],
         max_token_length: int,
+        infinite_tokens: bool,
         resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
@@ -609,6 +610,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.tokenizers = tokenizer if isinstance(tokenizer, list) else [tokenizer]
 
+        self.infinite_tokens = infinite_tokens
         self.max_token_length = max_token_length
         # width/height is used when enable_bucket==False
         self.width, self.height = (None, None) if resolution is None else resolution
@@ -1612,6 +1614,7 @@ class DreamBoothDataset(BaseDataset):
         batch_size: int,
         tokenizer,
         max_token_length,
+        infinite_tokens: bool,
         resolution,
         network_multiplier: float,
         enable_bucket: bool,
@@ -1622,7 +1625,7 @@ class DreamBoothDataset(BaseDataset):
         prior_loss_weight: float,
         debug_dataset: bool,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, infinite_tokens, resolution, network_multiplier, debug_dataset)
 
         assert resolution is not None, f"resolution is required / resolution（解像度）指定は必須です"
 
@@ -1834,6 +1837,7 @@ class FineTuningDataset(BaseDataset):
         batch_size: int,
         tokenizer,
         max_token_length,
+        infinite_tokens: bool,
         resolution,
         network_multiplier: float,
         enable_bucket: bool,
@@ -1843,7 +1847,7 @@ class FineTuningDataset(BaseDataset):
         bucket_no_upscale: bool,
         debug_dataset: bool,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, infinite_tokens, resolution, network_multiplier, debug_dataset)
 
         self.batch_size = batch_size
 
@@ -2059,6 +2063,7 @@ class ControlNetDataset(BaseDataset):
         batch_size: int,
         tokenizer,
         max_token_length,
+        infinite_tokens: bool,
         resolution,
         network_multiplier: float,
         enable_bucket: bool,
@@ -2068,7 +2073,7 @@ class ControlNetDataset(BaseDataset):
         bucket_no_upscale: bool,
         debug_dataset: float,
     ) -> None:
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+        super().__init__(tokenizer, max_token_length, infinite_tokens, resolution, network_multiplier, debug_dataset)
 
         db_subsets = []
         for subset in subsets:
@@ -2108,6 +2113,7 @@ class ControlNetDataset(BaseDataset):
             batch_size,
             tokenizer,
             max_token_length,
+            infinite_tokens,
             resolution,
             network_multiplier,
             enable_bucket,
@@ -2488,8 +2494,8 @@ def glob_images_pathlib(dir_path, recursive):
 
 
 class MinimalDataset(BaseDataset):
-    def __init__(self, tokenizer, max_token_length, resolution, network_multiplier, debug_dataset=False):
-        super().__init__(tokenizer, max_token_length, resolution, network_multiplier, debug_dataset)
+    def __init__(self, tokenizer, max_token_length, infinite_tokens, resolution, network_multiplier, debug_dataset=False):
+        super().__init__(tokenizer, max_token_length, infinite_tokens, resolution, network_multiplier, debug_dataset)
 
         self.num_train_images = 0  # update in subclass
         self.num_reg_images = 0  # update in subclass
@@ -2556,7 +2562,7 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
     dataset_class = args.dataset_class.split(".")[-1]
     module = importlib.import_module(module)
     dataset_class = getattr(module, dataset_class)
-    train_dataset_group: MinimalDataset = dataset_class(tokenizer, args.max_token_length, args.resolution, args.debug_dataset)
+    train_dataset_group: MinimalDataset = dataset_class(tokenizer, args.max_token_length, args.infinite_tokens, args.resolution, args.debug_dataset)
     return train_dataset_group
 
 
@@ -3297,6 +3303,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         # choices=[None, 150, 225],
         help="max token length of text encoder (default for 75, 150 or 225) / text encoderのトークンの最大長（未指定で75、150または225が指定可）",
+    )
+    parser.add_argument(
+        "--infinite_tokens",
+        action="store_true",
+        help="enable infinite token length, padding to the longest caption in the batch up to max_token_length",
     )
     parser.add_argument(
         "--mem_eff_attn",
