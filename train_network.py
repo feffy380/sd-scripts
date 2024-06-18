@@ -141,7 +141,11 @@ class NetworkTrainer:
                 param.grad = accelerator.reduce(param.grad, reduction="mean")
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+        if args.todo_factor:
+            token_downsampling.remove_patch(unet)
         train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
+        if args.todo_factor:
+            token_downsampling.apply_patch(unet, args, self.is_sdxl)
 
     def create_embedding_from_data(self, data, name='unknown'):
         if 'string_to_param' in data:  # textual inversion embeddings
