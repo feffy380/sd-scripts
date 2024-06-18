@@ -6,6 +6,7 @@ init_ipex()
 
 from library import sdxl_model_util, sdxl_train_util, train_util
 import train_network
+from library import token_downsampling
 from library.utils import setup_logging
 setup_logging()
 import logging
@@ -165,7 +166,11 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
         return noise_pred
 
     def sample_images(self, accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet):
+        if args.todo_factor:
+            token_downsampling.remove_patch(unet)
         sdxl_train_util.sample_images(accelerator, args, epoch, global_step, device, vae, tokenizer, text_encoder, unet)
+        if args.todo_factor:
+            token_downsampling.apply_patch(unet, args, self.is_sdxl)
 
 
 def setup_parser() -> argparse.ArgumentParser:
