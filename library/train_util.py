@@ -1857,19 +1857,35 @@ class DreamBoothDataset(BaseDataset):
             logger.warning("no regularization images / 正則化画像が見つかりませんでした")
         else:
             # num_repeatsを計算する：どうせ大した数ではないのでループで処理する
-            n = 0
-            first_loop = True
-            while n < num_train_images:
-                for info, subset in reg_infos:
-                    if first_loop:
-                        self.register_image(info, subset)
-                        n += info.num_repeats
-                    else:
-                        info.num_repeats += 1  # rewrite registered info
-                        n += 1
-                    if n >= num_train_images:
-                        break
-                first_loop = False
+            # divide equally, but num_train_images is size of each individual subset
+            # group by subset
+            reg_infos.sort(key=lambda x: x[0].image_key)  # ensure same images are always selected for a given seed
+            random.shuffle(reg_infos)
+            subset_lookup: dict[str, DreamBoothSubset] = {}
+            subset_groups: dict[str, ImageInfo] = {}
+            for info, subset in reg_infos:
+                key = subset.image_dir
+                if key not in subset_lookup:
+                    subset_lookup[key] = subset
+                    subset_groups[key] = []
+                subset_groups[key].append(info)
+            # iterate over subsets
+            for key, subset in subset_lookup.items():
+                n = 0
+                first_loop = True
+                infos = subset_groups[key]
+                limit = num_train_images * subset.num_repeats  # repeats is now ratio relative to train images
+                while n < limit:
+                    for info in infos:
+                        if first_loop:
+                            info.num_repeats = 1
+                            self.register_image(info, subset)
+                            n += 1
+                        else:
+                            info.num_repeats += 1  # rewrite registered info
+                            n += 1
+                        if n >= limit:
+                            break
 
         self.num_reg_images = num_reg_images
 
