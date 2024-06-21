@@ -968,7 +968,7 @@ class NetworkTrainer:
             ), f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
 
         progress_bar = tqdm(
-            range(args.max_train_steps - initial_step), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps"
+            initial=initial_step, total=args.max_train_steps, smoothing=0.1, disable=not accelerator.is_local_main_process, desc="steps"
         )
 
         epoch_to_start = 0
@@ -1101,17 +1101,18 @@ class NetworkTrainer:
                         updated_embs = accelerator.unwrap_model(t_enc).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
                         embeddings_map[emb_name][i] = updated_embs
 
-        # For --sample_at_first
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
-
         orig_ip_noise_gamma = args.ip_noise_gamma
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
+            global_step = initial_step
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
                 initial_step -= len(train_dataloader)
-            global_step = initial_step
+
+        # For --sample_at_first
+        if args.sample_at_first and global_step == 0:
+            self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
