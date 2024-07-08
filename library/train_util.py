@@ -71,7 +71,7 @@ from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipel
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
-from library import token_downsampling
+from library.srgb_util import open_srgb
 import library.deepspeed_utils as deepspeed_utils
 from library.utils import setup_logging
 
@@ -2628,7 +2628,8 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 
 
 def load_image(image_path, alpha=False):
-    image = Image.open(image_path)
+    # image = Image.open(image_path)
+    image = open_srgb(image_path)
     if alpha:
         if not image.mode == "RGBA":
             image = image.convert("RGBA")
