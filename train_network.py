@@ -216,6 +216,11 @@ class NetworkTrainer:
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
         undo_low_precision_norm()
 
+        # apply token merging patch
+        if args.todo_factor:
+            token_downsampling.apply_patch(unet, args, self.is_sdxl)
+            logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
+
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
 
@@ -1159,7 +1164,7 @@ class NetworkTrainer:
                         if disable_step < 1.0:
                             disable_step *= args.max_train_steps
                         disable_step = int(disable_step) + 1
-                        if global_step == disable_step:
+                        if global_step >= disable_step:
                             token_downsampling.remove_patch(unet)
 
                             # according to TI example in Diffusers, train is required
@@ -1176,6 +1181,8 @@ class NetworkTrainer:
 
                             if args.todo_mem_eff_attn:
                                 train_util.replace_unet_modules(unet, mem_eff_attn=True, xformers=False, sdpa=False)
+
+                            args.todo_factor = None
 
                     if "latents" in batch and batch["latents"] is not None:
                         latents = batch["latents"].to(device=accelerator.device, dtype=weight_dtype, non_blocking=True)
