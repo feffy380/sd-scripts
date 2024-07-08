@@ -4684,6 +4684,51 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             **lr_scheduler_kwargs,
         )
 
+    if name.lower() == "linear_with_restarts":
+        max_lr = 1.0
+        min_lr = 0.01
+        cycle_steps = num_training_steps / num_cycles
+
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                return current_step / max(1, num_warmup_steps)
+            if current_step / cycle_steps < 1.0:
+                cycle_progress = (current_step - num_warmup_steps) / (cycle_steps - num_warmup_steps)
+            else:
+                cycle_step = current_step % cycle_steps
+                cycle_progress = cycle_step / cycle_steps
+            return min_lr + (max_lr - min_lr) * cycle_progress
+            # return min_lr + (max_lr - min_lr) * max(0.0, 0.5 * (1.0 + math.cos(math.pi * cycle_progress)))
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, **lr_scheduler_kwargs)
+
+    if name.lower() == "constant_with_cooldown":
+        def ConstantWithCooldown(
+            optimizer: Optimizer,
+            warmup_steps: int,
+            cooldown_steps: int = 0,
+        ):
+            if cooldown_steps > 0 and cooldown_steps < 1.0:
+                cooldown_steps = int(num_training_steps * cooldown_steps)
+
+            def lr_lambda(current_step: int):
+                if current_step < warmup_steps:
+                    return current_step / max(1, warmup_steps)
+                if current_step < num_training_steps - cooldown_steps:
+                    return 1.0
+                if current_step < num_training_steps:
+                    progress = (current_step - (num_training_steps - cooldown_steps)) / max(1, cooldown_steps)
+                    return 1 - math.sqrt(progress)
+                return 0
+
+            return torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lr_lambda)
+
+        return ConstantWithCooldown(
+            optimizer,
+            warmup_steps=num_warmup_steps,
+            **lr_scheduler_kwargs,
+        )
+
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
