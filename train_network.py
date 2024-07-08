@@ -986,7 +986,7 @@ class NetworkTrainer:
                         f"initial_step is specified but not resuming. lr scheduler will be started from the beginning / initial_stepが指定されていますがresumeしていないため、lr schedulerは最初から始まります"
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
-                initial_step *= args.gradient_accumulation_steps
+                # initial_step *= args.gradient_accumulation_steps
 
                 # set epoch to start to make initial_step less than len(train_dataloader)
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1119,7 +1119,7 @@ class NetworkTrainer:
             global_step = initial_step
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
-                initial_step -= len(train_dataloader)
+                initial_step -= math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 
         # For --sample_at_first
         if args.sample_at_first and global_step == 0:
@@ -1143,12 +1143,12 @@ class NetworkTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                if schedulefree:
-                    optimizer.optimizer.train()
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
                     continue
+                if schedulefree:
+                    optimizer.optimizer.train()
 
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
@@ -1370,6 +1370,9 @@ class NetworkTrainer:
 
                 if global_step >= args.max_train_steps:
                     break
+
+            if skipped_dataloader:
+                del skipped_dataloader
 
             if args.logging_dir is not None:
                 logs = {"loss/epoch": loss_recorder.moving_average}
