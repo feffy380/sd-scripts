@@ -196,9 +196,9 @@ class FlashAttentionFunction(torch.autograd.Function):
 # forward-only flash attention for Navi
 class FlashAttnFuncNavi(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, q, k, v, mask, causal, q_bucket_size, k_bucket_size):
+    def forward(ctx, q, k, v, mask=None, causal=False, scale=None):
         dropout_p = 0.0
-        softmax_scale = q.shape[-1] ** (-0.5)
+        softmax_scale = q.shape[-1] ** (-0.5) if scale is None else scale
         return_softmax = False
 
         q, k, v = (rearrange(t, "b h n d -> b n h d") for t in (q, k, v))

@@ -674,6 +674,7 @@ class BaseDataset(torch.utils.data.Dataset):
         tags = [tag.strip() for tag in tags.split(sep)]
         # drop artist tags
         tags = [tag for tag in tags if not tag.startswith("by ")]
+        # return ", ".join(tags)
 
         # separate implied
         impl_tags = set()
@@ -4926,11 +4927,6 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
-
-    # apply token merging patch
-    if args.todo_factor:
-        token_downsampling.apply_patch(unet, args)
-        logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 

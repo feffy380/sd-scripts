@@ -14,6 +14,7 @@ import toml
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -523,7 +524,6 @@ class NetworkTrainer:
             collate_fn=collator,
             num_workers=n_workers,
             persistent_workers=args.persistent_data_loader_workers and n_workers > 0,
-            prefetch_factor=3 if n_workers > 0 else None,
         )
 
         # 学習ステップ数を計算する
@@ -1262,9 +1262,17 @@ class NetworkTrainer:
                     loss = train_util.conditional_loss(
                         noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
                     )
+                    # loss_4x4 = train_util.conditional_loss(
+                    #     torch.nn.functional.avg_pool2d(noise_pred.float(), 4),
+                    #     torch.nn.functional.avg_pool2d(target.float(), 4),
+                    #     reduction="none",
+                    #     loss_type=args.loss_type,
+                    #     huber_c=huber_c,
+                    # )
                     if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
+                    # loss = 0.25 * loss.mean([1, 2, 3]) + loss_4x4.mean([1, 2, 3])
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights
@@ -1335,6 +1343,10 @@ class NetworkTrainer:
                     progress_bar.update(1)
                     global_step += 1
 
+                    # switch schedulefree weights before sampling
+                    if (args.sample_every_n_steps is not None) and (global_step % args.sample_every_n_steps == 0):
+                        if schedulefree:
+                            optimizer.optimizer.eval()
                     self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
                     # 指定ステップごとにモデルを保存
