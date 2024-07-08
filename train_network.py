@@ -3,6 +3,7 @@ import argparse
 import math
 import os
 from pathlib import Path
+import signal
 import sys
 import random
 import time
@@ -54,6 +55,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.interrupted = False
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -1107,6 +1109,11 @@ class NetworkTrainer:
 
         orig_ip_noise_gamma = args.ip_noise_gamma
 
+        # interrupt handler
+        def signal_handler(sig, frame):
+            self.interrupted = True
+        signal.signal(signal.SIGINT, signal_handler)
+
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
             global_step = initial_step
@@ -1324,7 +1331,7 @@ class NetworkTrainer:
                     self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
                     # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                    if (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0) or self.interrupted:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             if schedulefree:
@@ -1342,6 +1349,9 @@ class NetworkTrainer:
                             if remove_step_no is not None:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
+                        if self.interrupted:
+                            logger.warning("Received Ctrl-C. Saving model and exiting.")
+                            return
 
                 current_loss = loss.detach().item()
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
