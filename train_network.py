@@ -213,9 +213,9 @@ class NetworkTrainer:
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # モデルを読み込む
-        apply_low_precision_norm()
+        # apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
-        undo_low_precision_norm()
+        # undo_low_precision_norm()
 
         # apply token merging patch
         if args.todo_factor:
@@ -1112,12 +1112,37 @@ class NetworkTrainer:
                         updated_embs = accelerator.unwrap_model(t_enc).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
                         embeddings_map[emb_name][i] = updated_embs
 
-        orig_ip_noise_gamma = args.ip_noise_gamma
+        # def embed_caption(batch):
+        #     return self.get_text_cond(args, accelerator, batch, tokenizers, text_encoders, weight_dtype)
 
-        # interrupt handler
-        def signal_handler(sig, frame):
-            self.interrupted = True
-        signal.signal(signal.SIGINT, signal_handler)
+        # orig_multiplier = accelerator.unwrap_model(network).multiplier
+        # accelerator.unwrap_model(network).set_multiplier(0)
+        # all_caps = []
+        # sample_count = 500
+        # with torch.no_grad(), tqdm(total=sample_count, desc="Collecting text encoder stats") as pbar:
+        #     remaining = sample_count
+        #     while remaining > 0:
+        #         for batch in train_dataloader:
+        #             caps = embed_caption(batch)
+        #             pbar.update(len(batch["captions"]))
+        #             all_caps.append(caps)
+        #             remaining -= len(batch["captions"])
+        #             if remaining <= 0:
+        #                 break
+        # if self.is_sdxl:
+        #     all_caps = list(zip(*all_caps))[:2]
+        #     # logger.warning(f"{all_caps[0][0].shape} {all_caps[1][0].shape} {all_caps[2][0].shape}")
+        #     cap_norm_mean = [
+        #         torch.cat([cap.norm(dim=-1).mean(dim=-1) for cap in caps]).mean(dim=0).unsqueeze(0)
+        #         for caps in all_caps
+        #     ]
+        #     # logger.warning(f"{cap_norm_mean}")
+        # else:
+        #     cap_norm_mean = torch.cat([cap.norm(dim=-1).mean(dim=-1) for cap in all_caps]).mean(dim=0).unsqueeze(0)
+        # del all_caps
+        # accelerator.unwrap_model(network).set_multiplier(orig_multiplier)
+
+        orig_ip_noise_gamma = args.ip_noise_gamma
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
@@ -1129,6 +1154,11 @@ class NetworkTrainer:
         # For --sample_at_first
         if args.sample_at_first and global_step == 0:
             self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+
+        # interrupt handler
+        def signal_handler(sig, frame):
+            self.interrupted = True
+        signal.signal(signal.SIGINT, signal_handler)
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -1273,6 +1303,17 @@ class NetworkTrainer:
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
                     # loss = 0.25 * loss.mean([1, 2, 3]) + loss_4x4.mean([1, 2, 3])
+
+                    # # TE norm loss
+                    # te_loss_weight = 1.0
+                    # if self.is_sdxl:
+                    #     te_loss_weight /= len(cap_norm_mean)
+                    #     for cond, norm_mean in zip(text_encoder_conds, cap_norm_mean):
+                    #         te_norm_loss = (cond.norm(dim=-1).mean(dim=-1) - norm_mean)**2
+                    #         loss += te_norm_loss * te_loss_weight
+                    # else:
+                    #     te_norm_loss = (text_encoder_conds.norm(dim=-1).mean(dim=-1) - cap_norm_mean)**2
+                    #     loss += te_norm_loss * te_loss_weight
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights

@@ -31,6 +31,7 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from library.attention_processors import FlashAttentionFunction, FlashAttnFuncNavi, flash_attn_installed
+from library.flash_attn_wmma.attention import FlashAttentionWMMA
 from .utils import setup_logging
 
 setup_logging()
@@ -373,6 +374,7 @@ class CrossAttention(nn.Module):
             out = FlashAttnFuncNavi.apply(q, k, v, mask, False)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
+        # out = FlashAttentionWMMA.apply(q, k, v, mask, False, 64, 256)
 
         out = rearrange(out, "b h n d -> b n (h d)", h=h)
 

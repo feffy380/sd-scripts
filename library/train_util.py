@@ -703,7 +703,8 @@ class BaseDataset(torch.utils.data.Dataset):
     def set_current_epoch(self, epoch):
         if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
             if epoch > self.current_epoch:
-                logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                # spammy
+                # logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
                 num_epochs = epoch - self.current_epoch
                 for _ in range(num_epochs):
                     self.current_epoch += 1
@@ -786,6 +787,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 # if caption is multiline, use the first line
                 caption = caption.split("\n")[0]
 
+            # drop implicated tags with some probability (fluffyrock unbound)
             caption = self.tag_dropout(caption, subset.caption_separator)
 
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
@@ -1858,7 +1860,7 @@ class DreamBoothDataset(BaseDataset):
             logger.warning("no regularization images / 正則化画像が見つかりませんでした")
         else:
             # num_repeatsを計算する：どうせ大した数ではないのでループで処理する
-            # divide equally, but num_train_images is size of each individual subset
+            # divide num_train_images equally among all subsets
             # group by subset
             reg_infos.sort(key=lambda x: x[0].image_key)  # ensure same images are always selected for a given seed
             random.shuffle(reg_infos)
@@ -1871,11 +1873,12 @@ class DreamBoothDataset(BaseDataset):
                     subset_groups[key] = []
                 subset_groups[key].append(info)
             # iterate over subsets
+            total_reg_repeats = sum([subset.num_repeats for subset in subset_lookup.values()])
             for key, subset in subset_lookup.items():
                 n = 0
                 first_loop = True
                 infos = subset_groups[key]
-                limit = num_train_images * subset.num_repeats  # repeats is now ratio relative to train images
+                limit = round(num_train_images * subset.num_repeats / total_reg_repeats)  # repeats is now proportion of all reg images
                 while n < limit:
                     for info in infos:
                         if first_loop:
@@ -1887,6 +1890,7 @@ class DreamBoothDataset(BaseDataset):
                             n += 1
                         if n >= limit:
                             break
+                    first_loop = False
 
         self.num_reg_images = num_reg_images
 
