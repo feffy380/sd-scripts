@@ -5889,10 +5889,10 @@ def sample_image_inference(
     if seed is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
-    else:
-        # True random sample image generation
-        torch.seed()
-        torch.cuda.seed()
+    # else:
+    #     # True random sample image generation
+    #     torch.seed()
+    #     torch.cuda.seed()
 
     scheduler = get_my_scheduler(
         sample_sampler=sampler_name,
