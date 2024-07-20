@@ -29,8 +29,10 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
     noise_scheduler.learned_weights = learned_weights.to(device)
 
     # laplace weights
-    mu = 0
-    b = 0.75
+    mu = 1.5
+    b = 2.5
+    # mu = 0
+    # b = 0.75
     laplace_weights = ((all_snr.log() - mu).abs() / -b).exp() / (2 * b)
     laplace_weights /= laplace_weights.mean()
     noise_scheduler.laplace_weights = laplace_weights.to(device)
