@@ -213,9 +213,9 @@ class NetworkTrainer:
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # モデルを読み込む
-        # apply_low_precision_norm()
+        apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
-        # undo_low_precision_norm()
+        undo_low_precision_norm()
 
         # apply token merging patch
         if args.todo_factor:
@@ -653,6 +653,9 @@ class NetworkTrainer:
         del t_enc
 
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
+        if not train_text_encoder:
+            for lora in accelerator.unwrap_model(network).text_encoder_loras:
+                lora.requires_grad_(False)
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)

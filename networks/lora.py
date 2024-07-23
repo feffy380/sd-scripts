@@ -1190,7 +1190,7 @@ class LoRANetwork(torch.nn.Module):
 
             return params, descriptions
 
-        if self.text_encoder_loras:
+        if self.text_encoder_loras and text_encoder_lr != 0.0:
             params, descriptions = assemble_params(
                 self.text_encoder_loras,
                 text_encoder_lr if text_encoder_lr is not None else default_lr,
