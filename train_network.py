@@ -1048,6 +1048,10 @@ class NetworkTrainer:
             metadata_to_save = minimum_metadata if args.no_metadata else metadata
             sai_metadata = train_util.get_sai_model_spec(None, args, self.is_sdxl, True, False)
             metadata_to_save.update(sai_metadata)
+            if args.reduced_metadata:
+                metadata_to_save.pop("ss_dataset_dirs", None)
+                metadata_to_save.pop("ss_datasets", None)
+                metadata_to_save.pop("ss_tag_frequency", None)
 
             unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
 
@@ -1500,6 +1504,9 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--no_metadata", action="store_true", help="do not save metadata in output model / メタデータを出力先モデルに保存しない"
+    )
+    parser.add_argument(
+        "--reduced_metadata", action="store_true", help="do not save dataset and tag metadata, which can be large"
     )
     parser.add_argument(
         "--save_model_as",
