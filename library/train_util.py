@@ -3580,7 +3580,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--timestep_bias_strategy",
         type=str,
         default="none",
-        choices=["earlier", "later", "range", "none"],
+        choices=["earlier", "later", "range", "none", "laplace"],
         help=(
             "The timestep bias strategy, which may help direct the model toward learning low or high frequency details."
             " Choices: ['earlier', 'later', 'range', 'none']."
@@ -5489,8 +5489,8 @@ def generate_timestep_weights(args, num_timesteps):
 def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler, b_size, device):
     if args.timestep_bias_strategy == "none":
         # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
-        # timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
-
+        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+    elif args.timestep_bias_strategy == "laplace":
         # sample timestep according to laplace distribution
         # https://github.com/kohya-ss/sd-scripts/discussions/294#discussioncomment-9954382
         timesteps = torch.multinomial(noise_scheduler.laplace_weights, b_size, replacement=True)
