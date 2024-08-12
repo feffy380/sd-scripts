@@ -1202,6 +1202,7 @@ class NetworkTrainer:
                             disable_step *= args.max_train_steps
                         disable_step = int(disable_step) + 1
                         if global_step >= disable_step:
+                            logger.info("Disabling ToDo")
                             token_downsampling.remove_patch(unet)
 
                             # according to TI example in Diffusers, train is required
@@ -1354,8 +1355,7 @@ class NetworkTrainer:
                             input_embeddings_weight.grad[index_no_updates] = 0
 
                     optimizer.step()
-                    if not schedulefree:
-                        lr_scheduler.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                     # normalize embeddings

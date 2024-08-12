@@ -31,7 +31,7 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from library.attention_processors import FlashAttentionFunction, FlashAttnFuncNavi, flash_attn_installed
-from library.flash_attn_wmma.attention import FlashAttentionWMMA
+# from library.flash_attn_wmma.attention import FlashAttentionWMMA
 from .utils import setup_logging
 
 setup_logging()
