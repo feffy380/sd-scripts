@@ -370,7 +370,7 @@ class CrossAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
 
-        if not torch.is_grad_enabled() and flash_attn_installed and q.shape[-1] <= 128:
+        if not torch.is_grad_enabled() and flash_attn_installed and q.shape[-1] <= 512:
             out = FlashAttnFuncNavi.apply(q, k, v, mask, False)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
