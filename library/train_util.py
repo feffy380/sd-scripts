@@ -653,6 +653,9 @@ class BaseDataset(torch.utils.data.Dataset):
         # caching
         self.caching_mode = None  # None, 'latents', 'text'
 
+        # self.setup_fluffyrock_tag_dropout()
+
+    def setup_fluffyrock_tag_dropout(self):
         # implication dropout
         import pandas as pd
         tag_stats = pd.read_csv(
@@ -788,7 +791,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 caption = caption.split("\n")[0]
 
             # drop implicated tags with some probability (fluffyrock unbound)
-            caption = self.tag_dropout(caption, subset.caption_separator)
+            # caption = self.tag_dropout(caption, subset.caption_separator)
 
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
                 fixed_tokens = []

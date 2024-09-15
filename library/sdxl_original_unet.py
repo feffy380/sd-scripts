@@ -374,7 +374,6 @@ class CrossAttention(nn.Module):
             out = FlashAttnFuncNavi.apply(q, k, v, mask, False)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
-        # out = FlashAttentionWMMA.apply(q, k, v, mask, False, 64, 256)
 
         out = rearrange(out, "b h n d -> b n (h d)", h=h)
 
