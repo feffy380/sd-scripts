@@ -1264,6 +1264,18 @@ class NetworkTrainer:
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
 
+                        # Apply conditioning dropout to enable classifier-free guidance sampling
+                        # Conditioning dropout within batch
+                        if args.sdxl_cond_dropout_rate > 0:
+                            def expand_dims_like(x, y):
+                                while x.dim() != y.dim():
+                                    x = x.unsqueeze(-1)
+                                return x
+                            mask = torch.ones(text_encoder_conds[0].shape[0], device=text_encoder_conds[0].device, dtype=text_encoder_conds[0].dtype)
+                            mask = torch.bernoulli((1.0 - args.sdxl_cond_dropout_rate) * mask)
+                            for conds in text_encoder_conds:
+                                conds.mul_(expand_dims_like(mask, conds))
+
                     # decay ip_noise_gamma
                     # args.ip_noise_gamma = orig_ip_noise_gamma / 2 * (1 + math.cos(global_step / args.max_train_steps * math.pi))
 

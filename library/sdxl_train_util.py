@@ -342,6 +342,12 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         action="store_true",
         help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
     )
+    parser.add_argument(
+        "--sdxl_cond_dropout_rate",
+        type=float,
+        default=0,
+        help="rate (0-1) at which to drop out the text conditioning for classifier-free guidance in SDXL"
+    )
 
 
 def verify_sdxl_training_args(args: argparse.Namespace, supportTextEncoderCaching: bool = True):
