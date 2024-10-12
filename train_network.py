@@ -1006,10 +1006,8 @@ class NetworkTrainer:
         global_step = 0
 
         prediction_type = "v_prediction" if args.v_parameterization else "epsilon"
-        beta_end = 0.01565 if self.is_sdxl else 0.012
-        train_util.SCHEDULER_LINEAR_END = beta_end
         noise_scheduler = DDIMScheduler(
-            beta_start=0.00085, beta_end=beta_end, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000, clip_sample=False,
             timestep_spacing="trailing",
             prediction_type=prediction_type,
             rescale_betas_zero_snr=args.zero_terminal_snr,
