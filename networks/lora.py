@@ -1190,7 +1190,7 @@ class LoRANetwork(torch.nn.Module):
 
             return params, descriptions
 
-        if self.text_encoder_loras:
+        if self.text_encoder_loras and text_encoder_lr != 0.0:
             params, descriptions = assemble_params(
                 self.text_encoder_loras,
                 text_encoder_lr if text_encoder_lr is not None else default_lr,
@@ -1367,8 +1367,8 @@ class LoRANetwork(torch.nn.Module):
         # downkeys = []
         # upkeys = []
         # alphakeys = []
-        # norms = []
-        # keys_scaled = 0
+        norms = []
+        keys_scaled = 0
 
         downkeys = self._downkeys
         upkeys = self._upkeys
@@ -1403,14 +1403,14 @@ class LoRANetwork(torch.nn.Module):
             # ratio = desired.cpu() / norm.cpu()
             ratio = desired / norm
             sqrt_ratio = ratio**0.5
-            # if ratio != 1:
-            #     keys_scaled += 1
-            #     state_dict[upkeys[i]] *= sqrt_ratio
-            #     state_dict[downkeys[i]] *= sqrt_ratio
-            # scalednorm = updown.norm() * ratio
-            # norms.append(scalednorm.item())
+            if ratio != 1:
+                keys_scaled += 1
+                state_dict[upkeys[i]] *= sqrt_ratio
+                state_dict[downkeys[i]] *= sqrt_ratio
+            scalednorm = updown.norm() * ratio
+            norms.append(scalednorm.item())
             state_dict[upkeys[i]] *= sqrt_ratio
             state_dict[downkeys[i]] *= sqrt_ratio
 
-        # return keys_scaled, sum(norms) / len(norms), max(norms)
-        return 0, 0, 0
+        return keys_scaled, sum(norms) / len(norms), max(norms)
+        # return 0, 0, 0

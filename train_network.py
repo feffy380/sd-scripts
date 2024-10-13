@@ -3,6 +3,7 @@ import argparse
 import math
 import os
 from pathlib import Path
+import signal
 import sys
 import random
 import time
@@ -13,6 +14,7 @@ import toml
 from tqdm import tqdm
 
 import torch
+import torch.nn.functional as F
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -54,6 +56,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.interrupted = False
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -213,6 +216,11 @@ class NetworkTrainer:
         apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
         undo_low_precision_norm()
+
+        # apply token merging patch
+        if args.todo_factor:
+            token_downsampling.apply_patch(unet, args, self.is_sdxl)
+            logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
 
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -516,7 +524,6 @@ class NetworkTrainer:
             collate_fn=collator,
             num_workers=n_workers,
             persistent_workers=args.persistent_data_loader_workers and n_workers > 0,
-            prefetch_factor=3 if n_workers > 0 else None,
         )
 
         # 学習ステップ数を計算する
@@ -646,6 +653,9 @@ class NetworkTrainer:
         del t_enc
 
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
+        if not train_text_encoder:
+            for lora in accelerator.unwrap_model(network).text_encoder_loras:
+                lora.requires_grad_(False)
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
@@ -984,7 +994,7 @@ class NetworkTrainer:
                         f"initial_step is specified but not resuming. lr scheduler will be started from the beginning / initial_stepが指定されていますがresumeしていないため、lr schedulerは最初から始まります"
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
-                initial_step *= args.gradient_accumulation_steps
+                # initial_step *= args.gradient_accumulation_steps
 
                 # set epoch to start to make initial_step less than len(train_dataloader)
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1038,6 +1048,10 @@ class NetworkTrainer:
             metadata_to_save = minimum_metadata if args.no_metadata else metadata
             sai_metadata = train_util.get_sai_model_spec(None, args, self.is_sdxl, True, False)
             metadata_to_save.update(sai_metadata)
+            if args.reduced_metadata:
+                metadata_to_save.pop("ss_dataset_dirs", None)
+                metadata_to_save.pop("ss_datasets", None)
+                metadata_to_save.pop("ss_tag_frequency", None)
 
             unwrapped_nw.save_weights(ckpt_file, save_dtype, metadata_to_save)
 
@@ -1105,6 +1119,36 @@ class NetworkTrainer:
                         updated_embs = accelerator.unwrap_model(t_enc).get_input_embeddings().weight[emb_token_ids].data.detach().clone()
                         embeddings_map[emb_name][i] = updated_embs
 
+        # def embed_caption(batch):
+        #     return self.get_text_cond(args, accelerator, batch, tokenizers, text_encoders, weight_dtype)
+
+        # orig_multiplier = accelerator.unwrap_model(network).multiplier
+        # accelerator.unwrap_model(network).set_multiplier(0)
+        # all_caps = []
+        # sample_count = 500
+        # with torch.no_grad(), tqdm(total=sample_count, desc="Collecting text encoder stats") as pbar:
+        #     remaining = sample_count
+        #     while remaining > 0:
+        #         for batch in train_dataloader:
+        #             caps = embed_caption(batch)
+        #             pbar.update(len(batch["captions"]))
+        #             all_caps.append(caps)
+        #             remaining -= len(batch["captions"])
+        #             if remaining <= 0:
+        #                 break
+        # if self.is_sdxl:
+        #     all_caps = list(zip(*all_caps))[:2]
+        #     # logger.warning(f"{all_caps[0][0].shape} {all_caps[1][0].shape} {all_caps[2][0].shape}")
+        #     cap_norm_mean = [
+        #         torch.cat([cap.norm(dim=-1).mean(dim=-1) for cap in caps]).mean(dim=0).unsqueeze(0)
+        #         for caps in all_caps
+        #     ]
+        #     # logger.warning(f"{cap_norm_mean}")
+        # else:
+        #     cap_norm_mean = torch.cat([cap.norm(dim=-1).mean(dim=-1) for cap in all_caps]).mean(dim=0).unsqueeze(0)
+        # del all_caps
+        # accelerator.unwrap_model(network).set_multiplier(orig_multiplier)
+
         orig_ip_noise_gamma = args.ip_noise_gamma
 
         # training loop
@@ -1112,11 +1156,16 @@ class NetworkTrainer:
             global_step = initial_step
             for skip_epoch in range(epoch_to_start):  # skip epochs
                 logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
-                initial_step -= len(train_dataloader)
+                initial_step -= math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 
         # For --sample_at_first
         if args.sample_at_first and global_step == 0:
             self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
+
+        # interrupt handler
+        def signal_handler(sig, frame):
+            self.interrupted = True
+        signal.signal(signal.SIGINT, signal_handler)
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
@@ -1136,12 +1185,12 @@ class NetworkTrainer:
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
-                if schedulefree:
-                    optimizer.optimizer.train()
                 current_step.value = global_step
                 if initial_step > 0:
                     initial_step -= 1
                     continue
+                if schedulefree:
+                    optimizer.optimizer.train()
 
                 with accelerator.accumulate(training_model):
                     on_step_start(text_encoder, unet)
@@ -1152,7 +1201,8 @@ class NetworkTrainer:
                         if disable_step < 1.0:
                             disable_step *= args.max_train_steps
                         disable_step = int(disable_step) + 1
-                        if global_step == disable_step:
+                        if global_step >= disable_step:
+                            logger.info("Disabling ToDo")
                             token_downsampling.remove_patch(unet)
 
                             # according to TI example in Diffusers, train is required
@@ -1169,6 +1219,8 @@ class NetworkTrainer:
 
                             if args.todo_mem_eff_attn:
                                 train_util.replace_unet_modules(unet, mem_eff_attn=True, xformers=False, sdpa=False)
+
+                            args.todo_factor = None
 
                     if "latents" in batch and batch["latents"] is not None:
                         latents = batch["latents"].to(device=accelerator.device, dtype=weight_dtype, non_blocking=True)
@@ -1210,6 +1262,18 @@ class NetworkTrainer:
                                 args, accelerator, batch, tokenizers, text_encoders, weight_dtype
                             )
 
+                        # Apply conditioning dropout to enable classifier-free guidance sampling
+                        # Conditioning dropout within batch
+                        if args.sdxl_cond_dropout_rate > 0:
+                            def expand_dims_like(x, y):
+                                while x.dim() != y.dim():
+                                    x = x.unsqueeze(-1)
+                                return x
+                            mask = torch.ones(text_encoder_conds[0].shape[0], device=text_encoder_conds[0].device, dtype=text_encoder_conds[0].dtype)
+                            mask = torch.bernoulli((1.0 - args.sdxl_cond_dropout_rate) * mask)
+                            for conds in text_encoder_conds:
+                                conds.mul_(expand_dims_like(mask, conds))
+
                     # decay ip_noise_gamma
                     # args.ip_noise_gamma = orig_ip_noise_gamma / 2 * (1 + math.cos(global_step / args.max_train_steps * math.pi))
 
@@ -1248,9 +1312,28 @@ class NetworkTrainer:
                     loss = train_util.conditional_loss(
                         noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=huber_c
                     )
+                    # loss_4x4 = train_util.conditional_loss(
+                    #     torch.nn.functional.avg_pool2d(noise_pred.float(), 4),
+                    #     torch.nn.functional.avg_pool2d(target.float(), 4),
+                    #     reduction="none",
+                    #     loss_type=args.loss_type,
+                    #     huber_c=huber_c,
+                    # )
                     if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
                         loss = apply_masked_loss(loss, batch)
                     loss = loss.mean([1, 2, 3])
+                    # loss = 0.25 * loss.mean([1, 2, 3]) + loss_4x4.mean([1, 2, 3])
+
+                    # # TE norm loss
+                    # te_loss_weight = 1.0
+                    # if self.is_sdxl:
+                    #     te_loss_weight /= len(cap_norm_mean)
+                    #     for cond, norm_mean in zip(text_encoder_conds, cap_norm_mean):
+                    #         te_norm_loss = (cond.norm(dim=-1).mean(dim=-1) - norm_mean)**2
+                    #         loss += te_norm_loss * te_loss_weight
+                    # else:
+                    #     te_norm_loss = (text_encoder_conds.norm(dim=-1).mean(dim=-1) - cap_norm_mean)**2
+                    #     loss += te_norm_loss * te_loss_weight
 
                     loss_weights = batch["loss_weights"]  # 各sampleごとのweight
                     loss = loss * loss_weights
@@ -1284,8 +1367,7 @@ class NetworkTrainer:
                             input_embeddings_weight.grad[index_no_updates] = 0
 
                     optimizer.step()
-                    if not schedulefree:
-                        lr_scheduler.step()
+                    lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
                     # normalize embeddings
@@ -1321,10 +1403,14 @@ class NetworkTrainer:
                     progress_bar.update(1)
                     global_step += 1
 
+                    # switch schedulefree weights before sampling
+                    if (args.sample_every_n_steps is not None) and (global_step % args.sample_every_n_steps == 0):
+                        if schedulefree:
+                            optimizer.optimizer.eval()
                     self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
                     # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                    if (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0) or self.interrupted:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             if schedulefree:
@@ -1342,6 +1428,9 @@ class NetworkTrainer:
                             if remove_step_no is not None:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
+                        if self.interrupted:
+                            logger.warning("Received Ctrl-C. Saving model and exiting.")
+                            return
 
                 current_loss = loss.detach().item()
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
@@ -1360,6 +1449,9 @@ class NetworkTrainer:
 
                 if global_step >= args.max_train_steps:
                     break
+
+            if skipped_dataloader:
+                del skipped_dataloader
 
             if args.logging_dir is not None:
                 logs = {"loss/epoch": loss_recorder.moving_average}
@@ -1424,6 +1516,9 @@ def setup_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--no_metadata", action="store_true", help="do not save metadata in output model / メタデータを出力先モデルに保存しない"
+    )
+    parser.add_argument(
+        "--reduced_metadata", action="store_true", help="do not save dataset and tag metadata, which can be large"
     )
     parser.add_argument(
         "--save_model_as",

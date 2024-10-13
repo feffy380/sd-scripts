@@ -61,11 +61,6 @@ def load_target_model(args, accelerator, model_version: str, weight_dtype):
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
 
-    # apply token merging patch
-    if args.todo_factor:
-        token_downsampling.apply_patch(unet, args, is_sdxl=True)
-        logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
-
     return load_stable_diffusion_format, text_encoder1, text_encoder2, vae, unet, logit_scale, ckpt_info
 
 
@@ -346,6 +341,12 @@ def add_sdxl_training_arguments(parser: argparse.ArgumentParser):
         "--disable_mmap_load_safetensors",
         action="store_true",
         help="disable mmap load for safetensors. Speed up model loading in WSL environment / safetensorsのmmapロードを無効にする。WSL環境等でモデル読み込みを高速化できる",
+    )
+    parser.add_argument(
+        "--sdxl_cond_dropout_rate",
+        type=float,
+        default=0,
+        help="rate (0-1) at which to drop out the text conditioning for classifier-free guidance in SDXL"
     )
 
 

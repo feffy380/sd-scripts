@@ -71,7 +71,7 @@ from library.lpw_stable_diffusion import StableDiffusionLongPromptWeightingPipel
 import library.model_util as model_util
 import library.huggingface_util as huggingface_util
 import library.sai_model_spec as sai_model_spec
-from library import token_downsampling
+from library.srgb_util import open_srgb
 import library.deepspeed_utils as deepspeed_utils
 from library.utils import setup_logging
 
@@ -653,6 +653,50 @@ class BaseDataset(torch.utils.data.Dataset):
         # caching
         self.caching_mode = None  # None, 'latents', 'text'
 
+        # self.setup_fluffyrock_tag_dropout()
+
+    def setup_fluffyrock_tag_dropout(self):
+        # implication dropout
+        import pandas as pd
+        tag_stats = pd.read_csv(
+            "/home/hope/src/sd/pikaft-e621-posts-downloader/rr-e621-tags-2024-05-05.csv",
+            keep_default_na=False
+        )
+        assert len(tag_stats[tag_stats.duplicated(subset="tag", keep="first")]) == 0
+        self.tagdepth = dict(zip(tag_stats["tag"], tag_stats["avg_depth"]))
+        self.tag_implications = {}
+        for tag, impls in zip(tag_stats["tag"], tag_stats["implications"]):
+            if not impls or pd.isna(impls):
+                continue
+            impls = [impl.strip() for impl in impls.split(",")]
+            self.tag_implications[tag] = frozenset(impls)
+
+    def tag_dropout(self, tags: str, sep: str):
+        if not tags:
+            return ""
+        tags = [tag.strip() for tag in tags.split(sep)]
+        # drop artist tags
+        tags = [tag for tag in tags if not tag.startswith("by ")]
+        # return ", ".join(tags)
+
+        # separate implied
+        impl_tags = set()
+        impl_queue = set(tags)
+        while impl_queue:
+            tag = impl_queue.pop()
+            implied = self.tag_implications.get(tag, [])
+            impl_queue.update(implied)
+            impl_tags.update(implied)
+        impl_tags = list(impl_tags)
+
+        # dropout
+        avg_depths = np.array([self.tagdepth.get(tag, 0) for tag in impl_tags])
+        dropout_rate = 1 - 1 / (1 + avg_depths)
+        random_numbers = np.random.rand(len(impl_tags))
+        to_remove = set(np.array(impl_tags)[random_numbers < dropout_rate].tolist())
+        tags_filtered = [tag for tag in tags if tag not in to_remove]
+        return ", ".join(tags_filtered)
+
     def set_seed(self, seed):
         self.seed = seed
 
@@ -662,7 +706,8 @@ class BaseDataset(torch.utils.data.Dataset):
     def set_current_epoch(self, epoch):
         if not self.current_epoch == epoch:  # epochが切り替わったらバケツをシャッフルする
             if epoch > self.current_epoch:
-                logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
+                # spammy
+                # logger.info("epoch is incremented. current_epoch: {}, epoch: {}".format(self.current_epoch, epoch))
                 num_epochs = epoch - self.current_epoch
                 for _ in range(num_epochs):
                     self.current_epoch += 1
@@ -744,6 +789,9 @@ class BaseDataset(torch.utils.data.Dataset):
             else:
                 # if caption is multiline, use the first line
                 caption = caption.split("\n")[0]
+
+            # drop implicated tags with some probability (fluffyrock unbound)
+            # caption = self.tag_dropout(caption, subset.caption_separator)
 
             if subset.shuffle_caption or subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
                 fixed_tokens = []
@@ -1077,7 +1125,9 @@ class BaseDataset(torch.utils.data.Dataset):
 
             # check disk cache exists and size of latents
             if cache_to_disk:
-                info.latents_npz = os.path.splitext(info.absolute_path)[0] + ".npz"
+                res = self.width if (self.width == self.height) else f"{self.width}x{self.height}"
+                suffix = f"{res}-XL" if (len(self.tokenizers) > 1) else res
+                info.latents_npz = os.path.splitext(info.absolute_path)[0] + f"-{suffix}.npz"
                 if not is_main_process:  # store to info only
                     continue
 
@@ -1813,19 +1863,37 @@ class DreamBoothDataset(BaseDataset):
             logger.warning("no regularization images / 正則化画像が見つかりませんでした")
         else:
             # num_repeatsを計算する：どうせ大した数ではないのでループで処理する
-            n = 0
-            first_loop = True
-            while n < num_train_images:
-                for info, subset in reg_infos:
-                    if first_loop:
-                        self.register_image(info, subset)
-                        n += info.num_repeats
-                    else:
-                        info.num_repeats += 1  # rewrite registered info
-                        n += 1
-                    if n >= num_train_images:
-                        break
-                first_loop = False
+            # divide num_train_images equally among all subsets
+            # group by subset
+            reg_infos.sort(key=lambda x: x[0].image_key)  # ensure same images are always selected for a given seed
+            random.shuffle(reg_infos)
+            subset_lookup: dict[str, DreamBoothSubset] = {}
+            subset_groups: dict[str, ImageInfo] = {}
+            for info, subset in reg_infos:
+                key = subset.image_dir
+                if key not in subset_lookup:
+                    subset_lookup[key] = subset
+                    subset_groups[key] = []
+                subset_groups[key].append(info)
+            # iterate over subsets
+            total_reg_repeats = sum([subset.num_repeats for subset in subset_lookup.values()])
+            for key, subset in subset_lookup.items():
+                n = 0
+                first_loop = True
+                infos = subset_groups[key]
+                limit = round(num_train_images * subset.num_repeats / total_reg_repeats)  # repeats is now proportion of all reg images
+                while n < limit:
+                    for info in infos:
+                        if first_loop:
+                            info.num_repeats = 1
+                            self.register_image(info, subset)
+                            n += 1
+                        else:
+                            info.num_repeats += 1  # rewrite registered info
+                            n += 1
+                        if n >= limit:
+                            break
+                    first_loop = False
 
         self.num_reg_images = num_reg_images
 
@@ -2567,7 +2635,8 @@ def load_arbitrary_dataset(args, tokenizer) -> MinimalDataset:
 
 
 def load_image(image_path, alpha=False):
-    image = Image.open(image_path)
+    # image = Image.open(image_path)
+    image = open_srgb(image_path)
     if alpha:
         if not image.mode == "RGBA":
             image = image.convert("RGBA")
@@ -3514,7 +3583,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--timestep_bias_strategy",
         type=str,
         default="none",
-        choices=["earlier", "later", "range", "none"],
+        choices=["earlier", "later", "range", "none", "laplace"],
         help=(
             "The timestep bias strategy, which may help direct the model toward learning low or high frequency details."
             " Choices: ['earlier', 'later', 'range', 'none']."
@@ -4593,6 +4662,80 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
                 lr_lambda=lr_lambda,
         )
 
+    if name.upper() == "REXR":
+        def RexWithRestarts(
+            optimizer: Optimizer,
+            warmup_steps: int,
+            cycle_steps: int,
+            max_lr: float = 1.0,
+            min_lr: float = 0.01,
+            last_epoch: int = -1,
+        ):
+            def lr_lambda(current_step: int):
+                if current_step < warmup_steps:
+                    return current_step / max(1, warmup_steps)
+                if current_step / cycle_steps < 1.0:
+                    cycle_progress = (current_step - warmup_steps) / (cycle_steps - warmup_steps)
+                else:
+                    cycle_step = current_step % cycle_steps
+                    cycle_progress = cycle_step / cycle_steps
+                return min_lr + (max_lr - min_lr) * ((1 - cycle_progress) / (1 - cycle_progress / 2))
+
+            return torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lr_lambda, last_epoch=last_epoch)
+
+        cycle_steps = num_training_steps / num_cycles
+        return RexWithRestarts(
+            optimizer,
+            warmup_steps=num_warmup_steps,
+            cycle_steps=cycle_steps,
+            **lr_scheduler_kwargs,
+        )
+
+    if name.lower() == "linear_with_restarts":
+        max_lr = 1.0
+        min_lr = 0.01
+        cycle_steps = num_training_steps / num_cycles
+
+        def lr_lambda(current_step):
+            if current_step < num_warmup_steps:
+                return current_step / max(1, num_warmup_steps)
+            if current_step / cycle_steps < 1.0:
+                cycle_progress = (current_step - num_warmup_steps) / (cycle_steps - num_warmup_steps)
+            else:
+                cycle_step = current_step % cycle_steps
+                cycle_progress = cycle_step / cycle_steps
+            return min_lr + (max_lr - min_lr) * cycle_progress
+            # return min_lr + (max_lr - min_lr) * max(0.0, 0.5 * (1.0 + math.cos(math.pi * cycle_progress)))
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, **lr_scheduler_kwargs)
+
+    if name.lower() == "constant_with_cooldown":
+        def ConstantWithCooldown(
+            optimizer: Optimizer,
+            warmup_steps: int,
+            cooldown_steps: int = 0,
+        ):
+            if cooldown_steps > 0 and cooldown_steps < 1.0:
+                cooldown_steps = int(num_training_steps * cooldown_steps)
+
+            def lr_lambda(current_step: int):
+                if current_step < warmup_steps:
+                    return current_step / max(1, warmup_steps)
+                if current_step < num_training_steps - cooldown_steps:
+                    return 1.0
+                if current_step < num_training_steps:
+                    progress = (current_step - (num_training_steps - cooldown_steps)) / max(1, cooldown_steps)
+                    return 1 - math.sqrt(progress)
+                return 0
+
+            return torch.optim.lr_scheduler.LambdaLR(optimizer=optimizer, lr_lambda=lr_lambda)
+
+        return ConstantWithCooldown(
+            optimizer,
+            warmup_steps=num_warmup_steps,
+            **lr_scheduler_kwargs,
+        )
+
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
@@ -4837,11 +4980,6 @@ def load_target_model(args, weight_dtype, accelerator, unet_use_linear_projectio
 
             clean_memory_on_device(accelerator.device)
         accelerator.wait_for_everyone()
-
-    # apply token merging patch
-    if args.todo_factor:
-        token_downsampling.apply_patch(unet, args)
-        logger.info(f"enable token downsampling optimization: downsample_factor={args.todo_factor}, max_depth={args.todo_max_depth}")
 
     return text_encoder, vae, unet, load_stable_diffusion_format
 
@@ -5355,6 +5493,10 @@ def get_timesteps_and_huber_c(args, min_timestep, max_timestep, noise_scheduler,
     if args.timestep_bias_strategy == "none":
         # Sample a random timestep for each image without bias within [min_timestep, max_timestep)
         timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device=device)
+    elif args.timestep_bias_strategy == "laplace":
+        # sample timestep according to laplace distribution
+        # https://github.com/kohya-ss/sd-scripts/discussions/294#discussioncomment-9954382
+        timesteps = torch.multinomial(noise_scheduler.laplace_weights, b_size, replacement=True)
     else:
         # Sample a random timestep for each image, potentially biased by the timestep weights.
         weights = generate_timestep_weights(args, noise_scheduler.config.num_train_timesteps).to(device)
@@ -5750,10 +5892,10 @@ def sample_image_inference(
     if seed is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
-    else:
-        # True random sample image generation
-        torch.seed()
-        torch.cuda.seed()
+    # else:
+    #     # True random sample image generation
+    #     torch.seed()
+    #     torch.cuda.seed()
 
     scheduler = get_my_scheduler(
         sample_sampler=sampler_name,
