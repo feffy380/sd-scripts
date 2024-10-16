@@ -1244,7 +1244,6 @@ class NetworkTrainer:
                         f"initial_step is specified but not resuming. lr scheduler will be started from the beginning / initial_stepが指定されていますがresumeしていないため、lr schedulerは最初から始まります"
                     )
                 logger.info(f"skipping {initial_step} steps / {initial_step}ステップをスキップします")
-                initial_step *= args.gradient_accumulation_steps
 
                 # set epoch to start to make initial_step less than len(train_dataloader)
                 epoch_to_start = initial_step // math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1308,7 +1307,8 @@ class NetworkTrainer:
 
         # For --sample_at_first
         optimizer_eval_fn()
-        self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
+        if args.sample_at_first and initial_step == 0:
+            self.sample_images(accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet)
         optimizer_train_fn()
         is_tracking = len(accelerator.trackers) > 0
         if is_tracking:
@@ -1317,10 +1317,10 @@ class NetworkTrainer:
 
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
-            for skip_epoch in range(epoch_to_start):  # skip epochs
-                logger.info(f"skipping epoch {skip_epoch+1} because initial_step (multiplied) is {initial_step}")
-                initial_step -= len(train_dataloader)
             global_step = initial_step
+            for skip_epoch in range(epoch_to_start):  # skip epochs
+                logger.info(f"skipping epoch {skip_epoch+1} because initial_step is {initial_step}")
+                initial_step -= math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
 
         # log device and dtype for each model
         logger.info(f"unet dtype: {unet_weight_dtype}, device: {unet.device}")
@@ -1334,7 +1334,7 @@ class NetworkTrainer:
         clean_memory_on_device(accelerator.device)
 
         progress_bar = tqdm(
-            range(args.max_train_steps - initial_step), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps"
+            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps"
         )
 
         validation_steps = (
