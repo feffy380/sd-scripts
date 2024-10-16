@@ -4,6 +4,7 @@ import math
 import os
 import typing
 from typing import Any, List, Union, Optional
+import signal
 import sys
 import random
 import time
@@ -56,6 +57,7 @@ class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
         self.is_sdxl = False
+        self.interrupted = False
 
     # TODO 他のスクリプトと共通化する
     def generate_step_logs(
@@ -1349,6 +1351,11 @@ class NetworkTrainer:
                     torch.cuda.set_rng_state(gpu_rng_state)
             random.setstate(python_rng_state)
 
+        # signal handler: save on ctrl-c
+        def signal_handler(sig, frame):
+            self.interrupted = True
+        signal.signal(signal.SIGINT, signal_handler)
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
@@ -1413,9 +1420,10 @@ class NetworkTrainer:
                     keys_scaled, mean_norm, maximum_norm = None, None, None
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
-                if accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    global_step += 1
+                if accelerator.sync_gradients or self.interrupted:
+                    if not self.interrupted:
+                        progress_bar.update(1)
+                        global_step += 1
 
                     optimizer_eval_fn()
                     self.sample_images(
@@ -1423,7 +1431,7 @@ class NetworkTrainer:
                     )
 
                     # 指定ステップごとにモデルを保存
-                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                    if (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0) or self.interrupted:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
@@ -1436,6 +1444,10 @@ class NetworkTrainer:
                             if remove_step_no is not None:
                                 remove_ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, remove_step_no)
                                 remove_model(remove_ckpt_name)
+
+                        if self.interrupted:
+                            logger.warning("Received Ctrl-C. Saving model and exiting.")
+                            return
                     optimizer_train_fn()
 
                 current_loss = loss.detach().item()
