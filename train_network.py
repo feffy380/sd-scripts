@@ -682,6 +682,10 @@ class NetworkTrainer:
         #             v = len(v)
         #         accelerator.print(f"trainable_params: {k} = {v}")
 
+        if "schedulefree" in args.optimizer_type.lower():
+            if args.lr_warmup_steps > 0:
+                args.optimizer_args.append(f"warmup_steps={args.lr_warmup_steps}")
+
         optimizer_name, optimizer_args, optimizer = train_util.get_optimizer(args, trainable_params)
         optimizer_train_fn, optimizer_eval_fn = train_util.get_optimizer_train_eval_fn(optimizer, args)
 
@@ -1166,7 +1170,7 @@ class NetworkTrainer:
             ), f"max_train_steps should be greater than initial step / max_train_stepsは初期ステップより大きい必要があります: {args.max_train_steps} vs {initial_step}"
 
         progress_bar = tqdm(
-            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps"
+            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps", dynamic_ncols=True,
         )
 
         epoch_to_start = 0
@@ -1347,15 +1351,18 @@ class NetworkTrainer:
                         progress_bar.update(1)
                         global_step += 1
 
-                    optimizer_eval_fn()
-                    self.sample_images(
-                        accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
-                    )
+                    # only switch schedulefree weights if sampling
+                    if (args.sample_every_n_steps is not None) and (global_step % args.sample_every_n_steps == 0):
+                        optimizer_eval_fn()
+                        self.sample_images(
+                            accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
+                        )
 
                     # 指定ステップごとにモデルを保存
                     if (args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0) or self.interrupted:
                         accelerator.wait_for_everyone()
                         if accelerator.is_main_process:
+                            optimizer_eval_fn()
                             ckpt_name = train_util.get_step_ckpt_name(args, "." + args.save_model_as, global_step)
                             save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
 
