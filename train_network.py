@@ -1891,8 +1891,19 @@ def setup_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def add_no_flags(parser: argparse.ArgumentParser):
+    # Iterate over all arguments in the parser
+    for action in parser._actions:
+        # Check if the action is a 'store_true' flag
+        if isinstance(action, argparse._StoreTrueAction):
+            # Create the corresponding --no_* flag
+            no_flag = '--no_' + action.dest
+            parser.add_argument(no_flag, dest=action.dest, action='store_false',help=f"Negate {action.option_strings[0]}")
+
+
 if __name__ == "__main__":
     parser = setup_parser()
+    add_no_flags(parser)
 
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
