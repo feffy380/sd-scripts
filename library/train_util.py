@@ -4032,6 +4032,9 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--sample_at_first", action="store_true", help="generate sample images before training / 学習前にサンプル出力する"
     )
     parser.add_argument(
+        "--sample_at_last", action="store_true", help="generate sample images after training"
+    )
+    parser.add_argument(
         "--sample_every_n_epochs",
         type=int,
         default=None,
@@ -6250,6 +6253,9 @@ def sample_images_common(
 
     if steps == 0:
         if not args.sample_at_first:
+            return
+    elif steps >= args.max_train_steps and epoch is None:
+        if not args.sample_at_last:
             return
     else:
         if args.sample_every_n_steps is None and args.sample_every_n_epochs is None:
