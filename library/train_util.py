@@ -4741,6 +4741,10 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
         return
 
     if not args.resume_from_huggingface:
+        resume_path = pathlib.Path(args.resume)
+        if not resume_path.exists():
+            logger.info(f"Checkpoint {resume_path.name} does not exist. Starting a new training run")
+            return
         logger.info(f"resume training from local state: {args.resume}")
         accelerator.load_state(args.resume)
         return
@@ -5914,6 +5918,13 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
         logger.info("uploading state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + EPOCH_STATE_NAME.format(model_name, epoch_no))
 
+    # Create a symlink named "latest-state" pointing to the current state
+    latest_link = os.path.join(args.output_dir, "latest-state")
+    rel_state_dir = os.path.relpath(state_dir, args.output_dir)
+    if os.path.exists(latest_link):
+        os.remove(latest_link)
+    os.symlink(rel_state_dir, latest_link)
+
     last_n_epochs = args.save_last_n_epochs_state if args.save_last_n_epochs_state else args.save_last_n_epochs
     if last_n_epochs is not None:
         remove_epoch_no = epoch_no - args.save_every_n_epochs * last_n_epochs
@@ -5935,6 +5946,13 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
     if args.save_state_to_huggingface:
         logger.info("uploading state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + STEP_STATE_NAME.format(model_name, step_no))
+
+    # Create a symlink named "latest-state" pointing to the current state
+    latest_link = os.path.join(args.output_dir, "latest-state")
+    rel_state_dir = os.path.relpath(state_dir, args.output_dir)
+    if os.path.exists(latest_link):
+        os.remove(latest_link)
+    os.symlink(rel_state_dir, latest_link)
 
     last_n_steps = args.save_last_n_steps_state if args.save_last_n_steps_state else args.save_last_n_steps
     if last_n_steps is not None:
@@ -5962,6 +5980,13 @@ def save_state_on_train_end(args: argparse.Namespace, accelerator):
     if args.save_state_to_huggingface:
         logger.info("uploading last state to huggingface.")
         huggingface_util.upload(args, state_dir, "/" + LAST_STATE_NAME.format(model_name))
+
+    # Create a symlink named "latest-state" pointing to the current state
+    latest_link = os.path.join(args.output_dir, "latest-state")
+    rel_state_dir = os.path.relpath(state_dir, args.output_dir)
+    if os.path.exists(latest_link):
+        os.remove(latest_link)
+    os.symlink(rel_state_dir, latest_link)
 
 
 def save_sd_model_on_train_end(
