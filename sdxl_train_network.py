@@ -220,6 +220,7 @@ def setup_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     parser = setup_parser()
+    train_network.add_no_flags(parser)
 
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
