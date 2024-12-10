@@ -1352,7 +1352,7 @@ class NetworkTrainer:
                         global_step += 1
 
                     # only switch schedulefree weights if sampling
-                    if (args.sample_every_n_steps is not None) and (global_step % args.sample_every_n_steps == 0):
+                    if ((args.sample_every_n_steps is not None) and (global_step % args.sample_every_n_steps == 0)) or (args.sample_at_last and (global_step >= args.max_train_steps)):
                         optimizer_eval_fn()
                         self.sample_images(
                             accelerator, args, None, global_step, accelerator.device, vae, tokenizers, text_encoder, unet
