@@ -18,11 +18,9 @@ def prepare_scheduler_for_custom_training(noise_scheduler, device):
         return
 
     alphas_cumprod = noise_scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
-    sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
-    alpha = sqrt_alphas_cumprod
-    sigma = sqrt_one_minus_alphas_cumprod
-    all_snr = (alpha / sigma) ** 2
+    all_snr = alphas_cumprod / (1.0 - alphas_cumprod)
+    # avoid division by zero
+    all_snr[-1] = max(all_snr[-1], 4.8973451890853435e-08)
 
     noise_scheduler.all_snr = all_snr.to(device)
 
