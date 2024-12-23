@@ -30,6 +30,7 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
+from library.attention_processors import FlashAttnFuncNavi, flash_attn_rocm_installed
 from library.utils import setup_logging
 
 setup_logging()
@@ -527,6 +528,8 @@ class CrossAttention(nn.Module):
 
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
 
+        if flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
+            flash_func = FlashAttnFuncNavi
         out = flash_func.apply(q, k, v, mask, False, q_bucket_size, k_bucket_size)
 
         out = rearrange(out, "b h n d -> b n (h d)")
@@ -545,7 +548,10 @@ class CrossAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
 
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
+        if flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
+            out = FlashAttnFuncNavi.apply(q, k, v, mask, False, None, None)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
 
         out = rearrange(out, "b h n d -> b n (h d)", h=h)
 
