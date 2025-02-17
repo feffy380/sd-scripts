@@ -64,12 +64,13 @@ def fix_noise_scheduler_betas_for_zero_terminal_snr(noise_scheduler):
 
 
 def apply_snr_weight(loss: torch.Tensor, timesteps: torch.IntTensor, noise_scheduler: DDPMScheduler, gamma: Number, v_prediction=False):
-    snr = torch.stack([noise_scheduler.all_snr[t] for t in timesteps])
-    min_snr_gamma = torch.minimum(snr, torch.full_like(snr, gamma))
+    # soft-min-snr
+    snr = noise_scheduler.all_snr[timesteps].float().to(loss.device)
+    snr_weight = snr * gamma / (snr + gamma)
     if v_prediction:
-        snr_weight = torch.div(min_snr_gamma, snr + 1).float().to(loss.device)
+        snr_weight = snr_weight / (snr + 1)
     else:
-        snr_weight = torch.div(min_snr_gamma, snr).float().to(loss.device)
+        snr_weight = snr_weight / snr
     loss = loss * snr_weight
     return loss
 
