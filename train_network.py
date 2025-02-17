@@ -46,6 +46,7 @@ from library.custom_train_functions import (
     apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
+from library.low_precision_norm import apply_low_precision_norm, undo_low_precision_norm
 
 setup_logging()
 import logging
@@ -587,7 +588,9 @@ class NetworkTrainer:
         vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # モデルを読み込む
+        apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
+        undo_low_precision_norm()
 
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
