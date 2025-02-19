@@ -5960,9 +5960,23 @@ def save_sd_model_on_train_end_common(
 
 def get_timesteps(min_timestep: int, max_timestep: int, b_size: int, device: torch.device) -> torch.Tensor:
     if min_timestep < max_timestep:
-        timesteps = torch.randint(min_timestep, max_timestep, (b_size,), device="cpu")
+        # Calculate boundaries for each interval
+        boundaries = torch.linspace(min_timestep, max_timestep, b_size + 1, device="cpu").long()
+        # Generate one timestep per interval
+        timesteps = []
+        for i in range(b_size):
+            low = boundaries[i]
+            high = boundaries[i + 1]
+            # Ensure the interval is valid
+            high = max(high, low + 1)
+            # Sample a random timestep from the interval [low, high)
+            timestep = torch.randint(low, high, (1,), device="cpu")
+            timesteps.append(timestep)
+        # Combine and return the tensor
+        timesteps = torch.cat(timesteps)
     else:
         timesteps = torch.full((b_size,), max_timestep, device="cpu")
+
     timesteps = timesteps.long().to(device)
     return timesteps
 
