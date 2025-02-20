@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 import torch
 from torch.types import Number
+import torchvision.transforms.functional as TF
 from library.device_utils import init_ipex, clean_memory_on_device
 
 init_ipex()
@@ -24,6 +25,7 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator
 from diffusers import DDPMScheduler
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+from transformers import SiglipVisionModel
 from library import deepspeed_utils, model_util, strategy_base, strategy_sd
 
 import library.train_util as train_util
@@ -246,37 +248,22 @@ class NetworkTrainer:
                 weight_dtype,
             )
 
-        if args.v_parameterization:
-            # v-parameterization training
-            target = noise_scheduler.get_velocity(latents, noise, timesteps)
-        else:
-            target = noise
+        # slider: predict noise residual prior
+        network.set_multiplier(0.0)
+        with torch.no_grad(), accelerator.autocast():
+            noise_pred_prior = self.call_unet(
+                args,
+                accelerator,
+                unet,
+                noisy_latents,
+                timesteps,
+                text_encoder_conds,
+                batch,
+                weight_dtype,
+            )
+        network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
 
-        # differential output preservation
-        if "custom_attributes" in batch:
-            diff_output_pr_indices = []
-            for i, custom_attributes in enumerate(batch["custom_attributes"]):
-                if "diff_output_preservation" in custom_attributes and custom_attributes["diff_output_preservation"]:
-                    diff_output_pr_indices.append(i)
-
-            if len(diff_output_pr_indices) > 0:
-                network.set_multiplier(0.0)
-                with torch.no_grad(), accelerator.autocast():
-                    noise_pred_prior = self.call_unet(
-                        args,
-                        accelerator,
-                        unet,
-                        noisy_latents,
-                        timesteps,
-                        text_encoder_conds,
-                        batch,
-                        weight_dtype,
-                        indices=diff_output_pr_indices,
-                    )
-                network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
-                target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
-
-        return noise_pred, target, timesteps, None
+        return noise_pred, noise_pred_prior, timesteps, None, noisy_latents
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -315,6 +302,40 @@ class NetworkTrainer:
 
     # endregion
 
+    def predict_x0(self, args, noise_scheduler, model_output: torch.Tensor, timesteps: torch.Tensor, sample: torch.Tensor):
+        t = timesteps
+
+        # 1. compute alphas, betas
+        alpha_prod_t = noise_scheduler.alphas_cumprod[t].view(-1, 1, 1, 1)
+        beta_prod_t = 1 - alpha_prod_t
+
+        # 2. compute predicted original sample from predicted noise also called
+        # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
+        if args.v_parameterization:
+            pred_original_sample = (alpha_prod_t**0.5) * sample - (beta_prod_t**0.5) * model_output
+        else:
+            pred_original_sample = (sample - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+
+        return pred_original_sample
+
+    def decode_latent(self, latents: torch.Tensor, vae: AutoencoderKL) -> torch.Tensor:
+        # convert latents to pixel space
+        latents = 1 / self.vae_scale_factor * latents
+        image = vae.decode(latents.to(vae.dtype)).sample
+        image = (image / 2 + 0.5).clamp(0, 1) * 255
+
+        return image
+
+    def siglip_preprocess(self, pixel_values):
+        # resize
+        pixel_values = TF.resize(img=pixel_values, size=(224, 224), interpolation=3)
+        # rescale
+        pixel_values = pixel_values / 255
+        # normalize
+        pixel_values = TF.normalize(pixel_values, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+
+        return pixel_values
+
     def process_batch(
         self, 
         batch, 
@@ -329,6 +350,8 @@ class NetworkTrainer:
         args, 
         text_encoding_strategy: strategy_base.TextEncodingStrategy, 
         tokenize_strategy: strategy_base.TokenizeStrategy, 
+        siglip: SiglipVisionModel,
+        pca_component: torch.Tensor,
         is_train=True, 
         train_text_encoder=True, 
         train_unet=True
@@ -387,7 +410,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, noise_pred_prior, timesteps, weighting, noisy_latents = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -401,14 +424,30 @@ class NetworkTrainer:
             is_train=is_train
         )
 
-        huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
-        loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+        # assert siglip.training and vae.training, f"training: {siglip.training, vae.training}"
+
+        # calculate sliderspace loss
+        # get base predicted images
+        with torch.no_grad():
+            base_pred = self.predict_x0(args, noise_scheduler, noise_pred_prior, timesteps, noisy_latents)
+            # decode base latents
+            base_image = self.decode_latent(base_pred, vae)
+            # calculate base embeddings
+            base_embeds = siglip(pixel_values=self.siglip_preprocess(base_image))[1]
+
+        # get lora predicted images
+        lora_pred = self.predict_x0(args, noise_scheduler, noise_pred, timesteps, noisy_latents)
+        # decode lora latents
+        lora_image = self.decode_latent(lora_pred, vae)
+        # calculate lora embeddings
+        lora_embeds = siglip(pixel_values=self.siglip_preprocess(lora_image))[1]
+
+        direction = lora_embeds - base_embeds
+        loss = 1 - torch.nn.functional.cosine_similarity(direction, pca_component, eps=1e-6)
+        # assert not torch.isnan(loss).any()
+
         if weighting is not None:
             loss = loss * weighting
-        if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
-            loss = apply_masked_loss(loss, batch)
-        loss = loss.mean([1, 2, 3])
-
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
         loss = loss * loss_weights
 
@@ -529,7 +568,15 @@ class NetworkTrainer:
         # モデルを読み込む
         apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
+        siglip = SiglipVisionModel.from_pretrained("google/siglip-base-patch16-224", torch_dtype=weight_dtype, device_map=accelerator.device)
+        siglip.requires_grad_(False)
         undo_low_precision_norm()
+
+        # load target PCA component
+        pca_components = np.load(args.pca_components)
+        assert args.pca_index < pca_components.shape[0], f"Invalid --pca_index {args.pca_index} for --pca_components with shape {pca_components.shape}"
+        pca_component = torch.tensor(pca_components[args.pca_index], device=accelerator.device, dtype=weight_dtype)
+        del pca_components
 
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -566,7 +613,7 @@ class NetworkTrainer:
             if val_dataset_group is not None:
                 val_dataset_group.new_cache_latents(vae, accelerator)
 
-            vae.to("cpu")
+            # vae.to("cpu")
             clean_memory_on_device(accelerator.device)
 
             accelerator.wait_for_everyone()
@@ -828,11 +875,15 @@ class NetworkTrainer:
                 # set top parameter requires_grad = True for gradient checkpointing works
                 if frag:
                     self.prepare_text_encoder_grad_ckpt_workaround(i, t_enc)
+            vae.train()
+            siglip.train()
 
         else:
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
+            vae.eval()
+            siglip.eval()
 
         del t_enc
 
@@ -840,7 +891,7 @@ class NetworkTrainer:
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
-            vae.eval()
+            # vae.eval()
             vae.to(accelerator.device, dtype=vae_dtype)
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -1322,6 +1373,8 @@ class NetworkTrainer:
                         args, 
                         text_encoding_strategy, 
                         tokenize_strategy, 
+                        siglip,
+                        pca_component,
                         is_train=True, 
                         train_text_encoder=train_text_encoder, 
                         train_unet=train_unet
@@ -1741,6 +1794,17 @@ def setup_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset / 処理される検証データセット項目の最大数。デフォルトでは、検証は検証データセット全体を実行します"
+    )
+    parser.add_argument(
+        "--pca_components",
+        type=str,
+        required=True,
+        help="Path to PCA components as .npy",
+    )
+    parser.add_argument(
+        "--pca_index",
+        type=int,
+        required=True,
     )
     return parser
 
