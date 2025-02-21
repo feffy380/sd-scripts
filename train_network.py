@@ -10,6 +10,7 @@ import random
 import time
 import json
 from multiprocessing import Value
+import numpy as np
 import toml
 
 from tqdm import tqdm
@@ -25,6 +26,7 @@ from accelerate.utils import set_seed
 from accelerate import Accelerator
 from diffusers import DDPMScheduler
 from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+from diffusers import AutoencoderTiny
 from transformers import SiglipVisionModel
 from library import deepspeed_utils, model_util, strategy_base, strategy_sd
 
@@ -318,9 +320,8 @@ class NetworkTrainer:
 
         return pred_original_sample
 
-    def decode_latent(self, latents: torch.Tensor, vae: AutoencoderKL) -> torch.Tensor:
+    def decode_latent(self, latents: torch.Tensor, vae: AutoencoderTiny) -> torch.Tensor:
         # convert latents to pixel space
-        latents = 1 / self.vae_scale_factor * latents
         image = vae.decode(latents.to(vae.dtype)).sample
         image = (image / 2 + 0.5).clamp(0, 1) * 255
 
@@ -350,6 +351,7 @@ class NetworkTrainer:
         args, 
         text_encoding_strategy: strategy_base.TextEncodingStrategy, 
         tokenize_strategy: strategy_base.TokenizeStrategy, 
+        tiny_vae: AutoencoderTiny,
         siglip: SiglipVisionModel,
         pca_component: torch.Tensor,
         is_train=True, 
@@ -431,14 +433,14 @@ class NetworkTrainer:
         with torch.no_grad():
             base_pred = self.predict_x0(args, noise_scheduler, noise_pred_prior, timesteps, noisy_latents)
             # decode base latents
-            base_image = self.decode_latent(base_pred, vae)
+            base_image = self.decode_latent(base_pred, tiny_vae)
             # calculate base embeddings
             base_embeds = siglip(pixel_values=self.siglip_preprocess(base_image))[1]
 
         # get lora predicted images
         lora_pred = self.predict_x0(args, noise_scheduler, noise_pred, timesteps, noisy_latents)
         # decode lora latents
-        lora_image = self.decode_latent(lora_pred, vae)
+        lora_image = self.decode_latent(lora_pred, tiny_vae,)
         # calculate lora embeddings
         lora_embeds = siglip(pixel_values=self.siglip_preprocess(lora_image))[1]
 
@@ -570,6 +572,9 @@ class NetworkTrainer:
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
         siglip = SiglipVisionModel.from_pretrained("google/siglip-base-patch16-224", torch_dtype=weight_dtype, device_map=accelerator.device)
         siglip.requires_grad_(False)
+        tiny_vae_name = "madebyollin/taesdxl" if self.is_sdxl else "madebyollin/taesd"
+        tiny_vae = AutoencoderTiny.from_pretrained(tiny_vae_name, torch_dtype=weight_dtype).to(device=accelerator.device)
+        tiny_vae.requires_grad_(False)
         undo_low_precision_norm()
 
         # load target PCA component
@@ -613,7 +618,7 @@ class NetworkTrainer:
             if val_dataset_group is not None:
                 val_dataset_group.new_cache_latents(vae, accelerator)
 
-            # vae.to("cpu")
+            vae.to("cpu")
             clean_memory_on_device(accelerator.device)
 
             accelerator.wait_for_everyone()
@@ -875,14 +880,14 @@ class NetworkTrainer:
                 # set top parameter requires_grad = True for gradient checkpointing works
                 if frag:
                     self.prepare_text_encoder_grad_ckpt_workaround(i, t_enc)
-            vae.train()
+            tiny_vae.train()
             siglip.train()
 
         else:
             unet.eval()
             for t_enc in text_encoders:
                 t_enc.eval()
-            vae.eval()
+            tiny_vae.eval()
             siglip.eval()
 
         del t_enc
@@ -891,7 +896,7 @@ class NetworkTrainer:
 
         if not cache_latents:  # キャッシュしない場合はVAEを使うのでVAEを準備する
             vae.requires_grad_(False)
-            # vae.eval()
+            vae.eval()
             vae.to(accelerator.device, dtype=vae_dtype)
 
         # 実験的機能：勾配も含めたfp16学習を行う　PyTorchにパッチを当ててfp16でのgrad scaleを有効にする
@@ -1373,6 +1378,7 @@ class NetworkTrainer:
                         args, 
                         text_encoding_strategy, 
                         tokenize_strategy, 
+                        tiny_vae,
                         siglip,
                         pca_component,
                         is_train=True, 
