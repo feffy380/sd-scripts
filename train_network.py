@@ -270,7 +270,17 @@ class NetworkTrainer:
     ):
         # Sample noise, sample a random timestep for each image, and add noise to the latents,
         # with noise offset and/or multires noise if specified
+        min_timestep = 0 if args.min_timestep is None else args.min_timestep
+        max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
+        boundaries = torch.linspace(min_timestep, max_timestep, args.gradient_accumulation_steps + 1, device="cpu").long()
+        b = accelerator.step % args.gradient_accumulation_steps
+        low, high = boundaries[b], boundaries[b + 1]
+        orig_ts = (args.min_timestep, args.max_timestep)
+        args.min_timestep, args.max_timestep = low, high
+
         noise, noisy_latents, timesteps = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
+
+        args.min_timestep, args.max_timestep = orig_ts
 
         # ensure the hidden state will require grad
         if args.gradient_checkpointing:
