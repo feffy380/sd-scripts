@@ -54,6 +54,54 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def solve_sylvester(A, B, C, X=None):
+    ''' From the answer here:
+        https://stackoverflow.com/questions/73713072/solving-sylvester-equations-in-pytorch
+    '''
+    if A.dtype in (torch.float16, torch.bfloat16):
+        A = A.to(torch.float32)
+        B = B.to(torch.float32)
+        C = C.to(torch.float32)
+
+    B = -B
+    m = B.shape[-1]
+    n = A.shape[-1]
+    R, U = torch.linalg.eig(A)
+    S, V = torch.linalg.eig(B)
+    F = torch.linalg.solve(U, C.to(torch.complex64) @ V)
+    W = R[..., :, None] - S[..., None, :]
+    Y = F / W
+    X = U[...,:n,:n] @ Y[...,:n,:m] @ torch.linalg.inv(V)[...,:m,:m]
+    return X.real if all(torch.isreal(x.flatten()[0]) for x in [A, B, C]) else X
+
+
+@torch.no_grad()
+def lora_pro_adjust_gradients(network):
+    for lora in network.text_encoder_loras + network.unet_loras:
+        A = lora.lora_down.weight
+        B = lora.lora_up.weight
+        grad_A_orin = A.grad
+        grad_B_orin = B.grad
+
+        # projection
+        delta = 1e-8
+
+        # computing the inverse matrix
+        AA_T = A @ A.T  # (r, r)
+        B_TB = B.T @ B  # (r, r)
+        AA_T_inv = torch.linalg.pinv(AA_T + delta * torch.eye(AA_T.shape[0], dtype=AA_T.dtype, device=AA_T.device))  # (r, r)
+        B_TB_inv = torch.linalg.pinv(B_TB + delta * torch.eye(B_TB.shape[0], dtype=B_TB.dtype, device=B_TB.device))  # (r, r)
+
+        X = solve_sylvester(B_TB, AA_T, -(1 / lora.scale ** 2) * B_TB_inv @ grad_A_orin @ A.T)  # (r, r)
+        X = X.to(B)
+
+        grad_A = (1 / lora.scale ** 2) * B_TB_inv @ grad_A_orin + X @ A
+        grad_B = (1 / lora.scale ** 2) * ((torch.eye(B.shape[0], dtype=B.dtype, device=B.device) - B @ B_TB_inv @ B.T) @ grad_B_orin @ AA_T_inv) - B @ X
+
+        A.grad = grad_A
+        B.grad = grad_B
+
+
 class NetworkTrainer:
     def __init__(self):
         self.vae_scale_factor = 0.18215
@@ -1421,6 +1469,7 @@ class NetworkTrainer:
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:
                         self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+                        lora_pro_adjust_gradients(accelerator.unwrap_model(network))
                         if args.max_grad_norm != 0.0:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
