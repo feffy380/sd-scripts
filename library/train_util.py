@@ -3331,7 +3331,7 @@ def replace_unet_modules(unet: UNet2DConditionModel, mem_eff_attn, xformers, sdp
         unet.set_use_memory_efficient_attention(True, False)
     elif sdpa:
         logger.info("Enable SDPA for U-Net")
-        unet.set_use_sdpa(True)
+        unet.set_use_sdpa(sdpa)
 
 
 """
@@ -3801,6 +3801,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--sdpa",
         action="store_true",
         help="use sdpa for CrossAttention (requires PyTorch 2.0) / CrossAttentionにsdpaを使う（PyTorch 2.0が必要）",
+    )
+    parser.add_argument(
+        "--rocm_flash_attn",
+        action="store_true",
+        help="use howiejay's flash_attn for no_grad attention forward pass",
     )
     parser.add_argument(
         "--vae",
@@ -4288,6 +4293,9 @@ def verify_command_line_training_args(args: argparse.Namespace):
             f"wandb is enabled, but option huggingface_repo_id is included in the command line and huggingface_repo_visibility is not 'public'. Because the command line is exposed to the public, it is recommended to move it to the `.toml` file."
             + f" / wandbが有効で、かつオプション huggingface_repo_id がコマンドラインに含まれており、huggingface_repo_visibility が 'public' ではありません。コマンドラインは公開されるため、`.toml`ファイルに移動することをお勧めします。"
         )
+
+    if args.rocm_flash_attn:
+        args.sdpa = "rocm_flash_attn"
 
 
 def enable_high_vram(args: argparse.Namespace):
