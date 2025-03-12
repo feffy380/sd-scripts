@@ -1330,6 +1330,10 @@ class NetworkTrainer:
             # log empty object to commit the sample images to wandb
             accelerator.log({}, step=0)
 
+        progress_bar = tqdm(
+            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps", dynamic_ncols=True,
+        )
+
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
             global_step = initial_step
@@ -1347,10 +1351,6 @@ class NetworkTrainer:
             logger.info(f"text_encoder [{i}] dtype: {param_3rd.dtype}, device: {t_enc.device}")
 
         clean_memory_on_device(accelerator.device)
-
-        progress_bar = tqdm(
-            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps", dynamic_ncols=True,
-        )
 
         validation_steps = (
             min(args.max_validation_steps, len(val_dataloader)) if args.max_validation_steps is not None else len(val_dataloader)
