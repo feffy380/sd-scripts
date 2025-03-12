@@ -445,7 +445,7 @@ class CrossAttention(nn.Module):
         if self.use_memory_efficient_attention_mem_eff:
             return self.forward_memory_efficient_mem_eff(hidden_states, context, mask)
         if self.use_sdpa:
-            return self.forward_sdpa(hidden_states, context, mask)
+            return self.forward_sdpa(hidden_states, context, mask, self.use_sdpa)
 
         query = self.to_q(hidden_states)
         context = context if context is not None else hidden_states
@@ -537,7 +537,7 @@ class CrossAttention(nn.Module):
         out = self.to_out[0](out)
         return out
 
-    def forward_sdpa(self, x, context=None, mask=None):
+    def forward_sdpa(self, x, context=None, mask=None, sdpa=True):
         h = self.heads
         q_in = self.to_q(x)
         context = context if context is not None else x
@@ -548,7 +548,7 @@ class CrossAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
 
-        if flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
+        if sdpa == "rocm_flash_attn" and flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
             out = FlashAttnFuncNavi.apply(q, k, v, mask, False, None, None)
         else:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
