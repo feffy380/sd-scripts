@@ -1371,6 +1371,8 @@ class NetworkTrainer:
             self.interrupted = True
         signal.signal(signal.SIGINT, signal_handler)
 
+        progress_bar.unpause()
+
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
