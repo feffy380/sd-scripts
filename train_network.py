@@ -1355,6 +1355,8 @@ class NetworkTrainer:
         validation_steps = (
             min(args.max_validation_steps, len(val_dataloader)) if args.max_validation_steps is not None else len(val_dataloader)
         )
+        if len(val_dataloader) > 0:
+            val_progress_bar = tqdm(range(validation_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="validation steps")
         NUM_VALIDATION_TIMESTEPS = 4  # 200, 400, 600, 800 TODO make this configurable
         min_timestep = 0 if args.min_timestep is None else args.min_timestep
         max_timestep = noise_scheduler.num_train_timesteps if args.max_timestep is None else args.max_timestep
@@ -1400,7 +1402,6 @@ class NetworkTrainer:
         progress_bar.unpause()
 
         for epoch in range(epoch_to_start, num_train_epochs):
-            accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}\n")
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
@@ -1410,7 +1411,7 @@ class NetworkTrainer:
             # TRAINING
             skipped_dataloader = None
             if initial_step > 0:
-                skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step - 1)
+                skipped_dataloader = accelerator.skip_first_batches(train_dataloader, initial_step * args.gradient_accumulation_steps - 1)
                 initial_step = 1
 
             for step, batch in enumerate(skipped_dataloader or train_dataloader):
@@ -1522,7 +1523,10 @@ class NetworkTrainer:
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                progress_bar.set_postfix(**logs, epoch=f"{epoch+1}/{num_train_epochs}")
+
+                if args.scale_weight_norms:
+                    progress_bar.set_postfix(**{**max_mean_logs, **logs}, epoch=f"{epoch+1}/{num_train_epochs}")
 
                 if is_tracking:
                     logs = self.generate_step_logs(
@@ -1548,12 +1552,7 @@ class NetworkTrainer:
                     accelerator.unwrap_model(network).eval()
                     rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
-                    val_progress_bar = tqdm(
-                        range(validation_total_steps),
-                        smoothing=0,
-                        disable=not accelerator.is_local_main_process,
-                        desc="validation steps",
-                    )
+                    val_progress_bar.reset()
                     val_timesteps_step = 0
                     for val_step, batch in enumerate(val_dataloader):
                         if val_step >= validation_steps:
@@ -1616,7 +1615,7 @@ class NetworkTrainer:
 
             # EPOCH VALIDATION
             should_validate_epoch = (
-                (epoch + 1) % args.validate_every_n_epochs == 0 if args.validate_every_n_epochs is not None else True
+                (epoch + 1) % args.validate_every_n_epochs == 0 if args.validate_every_n_epochs is not None else args.validate_every_n_steps is None
             )
 
             if should_validate_epoch and len(val_dataloader) > 0:
@@ -1624,13 +1623,7 @@ class NetworkTrainer:
                 accelerator.unwrap_model(network).eval()
                 rng_states = switch_rng_state(args.validation_seed if args.validation_seed is not None else args.seed)
 
-                val_progress_bar = tqdm(
-                    range(validation_total_steps),
-                    smoothing=0,
-                    disable=not accelerator.is_local_main_process,
-                    desc="epoch validation steps",
-                )
-
+                val_progress_bar.reset()
                 val_timesteps_step = 0
                 for val_step, batch in enumerate(val_dataloader):
                     if val_step >= validation_steps:
