@@ -77,29 +77,34 @@ def solve_sylvester(A, B, C, X=None):
 
 @torch.no_grad()
 def lora_pro_adjust_gradients(network):
-    for lora in network.text_encoder_loras + network.unet_loras:
-        A = lora.lora_down.weight
-        B = lora.lora_up.weight
-        grad_A_orin = A.grad
-        grad_B_orin = B.grad
+    loras = network.text_encoder_loras + network.unet_loras
+    scale = loras[0].scale
+    As, Bs = zip(*[(lora.lora_down.weight, lora.lora_up.weight) for lora in loras])
+    grad_A_orins, grad_B_orins = zip(*[(A.grad, B.grad) for A, B in zip(As, Bs)])
 
-        # projection
-        delta = 1e-8
+    # projection
+    delta = 1e-8
 
-        # computing the inverse matrix
-        AA_T = A @ A.T  # (r, r)
-        B_TB = B.T @ B  # (r, r)
-        AA_T_inv = torch.linalg.pinv(AA_T + delta * torch.eye(AA_T.shape[0], dtype=AA_T.dtype, device=AA_T.device))  # (r, r)
-        B_TB_inv = torch.linalg.pinv(B_TB + delta * torch.eye(B_TB.shape[0], dtype=B_TB.dtype, device=B_TB.device))  # (r, r)
+    # computing the inverse matrix
+    AA_Ts = torch.stack([A @ A.T for A in As])
+    B_TBs = torch.stack([B.T @ B for B in Bs])
+    I = delta * torch.eye(AA_Ts.shape[1], dtype=AA_Ts.dtype, device=AA_Ts.device)
+    AA_T_invs = torch.linalg.pinv(AA_Ts + I)
+    B_TB_invs = torch.linalg.pinv(B_TBs + I)
 
-        X = solve_sylvester(B_TB, AA_T, -(1 / lora.scale ** 2) * B_TB_inv @ grad_A_orin @ A.T)  # (r, r)
-        X = X.to(B)
+    Cs = torch.stack([
+        -(1 / scale ** 2) * B_TB_invs[i] @ grad_A_orins[i] @ As[i].T
+        for i, _ in enumerate(As)
+    ])
+    Xs = solve_sylvester(B_TBs, AA_Ts, Cs).to(Bs[0])
+    for i, _ in enumerate(As):
+        # X = solve_sylvester(B_TBs[i], AA_Ts[i], -(1 / scale ** 2) * B_TB_invs[i] @ grad_A_orins[i] @ As[i].T).to(Bs[i])
 
-        grad_A = (1 / lora.scale ** 2) * B_TB_inv @ grad_A_orin + X @ A
-        grad_B = (1 / lora.scale ** 2) * ((torch.eye(B.shape[0], dtype=B.dtype, device=B.device) - B @ B_TB_inv @ B.T) @ grad_B_orin @ AA_T_inv) - B @ X
+        grad_A = (1 / scale ** 2) * B_TB_invs[i] @ grad_A_orins[i] + Xs[i] @ As[i]
+        grad_B = (1 / scale ** 2) * ((torch.eye(Bs[i].shape[0], dtype=Bs[i].dtype, device=Bs[i].device) - Bs[i] @ B_TB_invs[i] @ Bs[i].T) @ grad_B_orins[i] @ AA_T_invs[i]) - Bs[i] @ Xs[i]
 
-        A.grad = grad_A
-        B.grad = grad_B
+        As[i].grad = grad_A
+        Bs[i].grad = grad_B
 
 
 class NetworkTrainer:
