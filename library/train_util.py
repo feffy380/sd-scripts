@@ -23,6 +23,7 @@ import hashlib
 import subprocess
 from io import BytesIO
 import toml
+from focal_frequency_loss import FocalFrequencyLoss as FFL
 
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -4105,7 +4106,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--loss_type",
         type=str,
         default="l2",
-        choices=["l1", "l2", "huber", "smooth_l1"],
+        choices=["l1", "l2", "huber", "smooth_l1", "ffl"],
         help="The type of loss function to use (L1, L2, Huber, or smooth L1), default is L2 / 使用する損失関数の種類（L1、L2、Huber、またはsmooth L1）、デフォルトはL2",
     )
     parser.add_argument(
@@ -6175,6 +6176,9 @@ def conditional_loss(
             loss = torch.mean(loss)
         elif reduction == "sum":
             loss = torch.sum(loss)
+    elif loss_type == "ffl":
+        ffl = FFL(loss_weight=1.0, alpha=1.0, reduction=reduction)
+        loss = ffl(model_pred, target)
     else:
         raise NotImplementedError(f"Unsupported Loss Type: {loss_type}")
     return loss
