@@ -373,6 +373,7 @@ class NetworkTrainer:
         text_encoders,
         unet,
         network,
+        lossweightMLP,
         vae,
         noise_scheduler,
         vae_dtype,
@@ -465,6 +466,8 @@ class NetworkTrainer:
         loss = loss * loss_weights
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
+        if args.learned_loss_weights:
+            loss, loss_scaled = lossweightMLP(loss, timesteps)
 
         return loss.mean()
 
@@ -1248,6 +1251,20 @@ class NetworkTrainer:
 
         noise_scheduler = self.get_noise_scheduler(args, accelerator.device)
 
+        # learned loss weights
+        lossweightMLP = None
+        if args.learned_loss_weights:
+            import networks.lossweightMLP as lossweightmodule
+            import copy
+            lossweightMLP, MLP_optim = lossweightmodule.create_weight_MLP(noise_scheduler)
+            aaa = copy.deepcopy(args)
+            aaa.lr_warmup_steps = 100
+            aaa.lr_scheduler_args = ["constant_steps=300"]
+            aaa.lr_scheduler = "inverse_sqrt_warmup"
+            MLP_scheduler = train_util.get_scheduler_fix(aaa, MLP_optim, accelerator.num_processes)
+            del aaa
+            lossweightMLP, MLP_optim, MLP_scheduler = accelerator.prepare(lossweightMLP, MLP_optim, MLP_scheduler)
+
         train_util.init_trackers(accelerator, args, "network_train")
 
         loss_recorder = train_util.LossRecorder()
@@ -1397,7 +1414,7 @@ class NetworkTrainer:
                     initial_step -= 1
                     continue
 
-                with accelerator.accumulate(training_model):
+                with accelerator.accumulate(training_model, lossweightMLP):
                     on_step_start_for_network(text_encoder, unet)
 
                     # preprocess batch for each model
@@ -1408,6 +1425,7 @@ class NetworkTrainer:
                         text_encoders,
                         unet,
                         network,
+                        lossweightMLP,
                         vae,
                         noise_scheduler,
                         vae_dtype,
@@ -1431,6 +1449,10 @@ class NetworkTrainer:
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
+                    if args.learned_loss_weights:
+                        MLP_optim.step()
+                        MLP_scheduler.step()
+                        MLP_optim.zero_grad(set_to_none=True)
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -1513,6 +1535,7 @@ class NetworkTrainer:
                                 text_encoders,
                                 unet,
                                 network,
+                                lossweightMLP,
                                 vae,
                                 noise_scheduler,
                                 vae_dtype,
@@ -1585,6 +1608,7 @@ class NetworkTrainer:
                             text_encoders,
                             unet,
                             network,
+                            lossweightMLP,
                             vae,
                             noise_scheduler,
                             vae_dtype,
@@ -1848,6 +1872,11 @@ def setup_parser() -> argparse.ArgumentParser:
         "--force_ck",
         action="store_true",
         help="Force AMD CK backend",
+    )
+    parser.add_argument(
+        "--learned_loss_weights",
+        action="store_true",
+        help="Use learned loss weights for training / 学習時に学習した損失重みを使用する",
     )
     return parser
 
