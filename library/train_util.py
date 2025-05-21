@@ -5306,6 +5306,20 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         schedule_func = DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION[name]
         return schedule_func(optimizer, **lr_scheduler_kwargs)  # step_rules and last_epoch are given as kwargs
 
+    if name.lower() == "inverse_sqrt_warmup":
+        def InverseSqrt(
+            optimizer: Optimizer,
+            warmup_steps: int,
+            constant_steps: int = 0,
+        ):
+            def lr_lambda(current_step: int):
+                if current_step <= warmup_steps:
+                    return current_step / max(1, warmup_steps)
+                else:
+                    return 1 / math.sqrt(max(current_step / (warmup_steps + constant_steps), 1))
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        return InverseSqrt(optimizer, warmup_steps=num_warmup_steps, **lr_scheduler_kwargs)
+
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]
 
