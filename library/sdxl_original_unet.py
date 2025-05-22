@@ -22,10 +22,12 @@
         legacy: False
 """
 
+from functools import lru_cache
 import math
 from types import SimpleNamespace
 from typing import Any, Optional
 import torch
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import functional as F
@@ -389,6 +391,30 @@ class Downsample2D(nn.Module):
         return hidden_states
 
 
+@lru_cache
+def get_block_mask(height, width, group_h, group_w, device):
+    """
+    Create a flex_attention block mask for the given dimensions.
+    """
+    cell_size = group_h * group_w
+    h, w = height // group_h, width // group_w
+
+    def local_mask(b, h_, q_idx, kv_idx):
+        # cross-shaped mask
+        q_y = q_idx // cell_size
+        kv_y = kv_idx // cell_size
+        q_h = q_y // w
+        q_w = q_y % w
+
+        kv_h = kv_y // w
+        kv_w = kv_y % w
+
+        return torch.logical_or(q_h == kv_h, q_w == kv_w)
+
+    BLOCK_MASK = create_block_mask(local_mask, B=None, H=None, device=device, Q_LEN=height * width, KV_LEN=height * width)
+    return BLOCK_MASK
+
+
 class CrossAttention(nn.Module):
     def __init__(
         self,
@@ -417,6 +443,40 @@ class CrossAttention(nn.Module):
         self.use_memory_efficient_attention_xformers = False
         self.use_memory_efficient_attention_mem_eff = False
         self.use_sdpa = False
+
+        # GRAT
+        self.flex_attn = torch.compile(flex_attention)
+        self._grat_info = None
+        self.group_size = (16, 16)
+
+    def clusterify(self, x):
+        # GRAT group blocks into contiguous clusters
+        bsz, head, n, c = x.shape
+        orig_h, orig_w = self._grat_info["size"]
+        orig_tokens = orig_h * orig_w
+        downsample = int(math.ceil(math.sqrt(orig_tokens // n)))
+        p_h, p_w = self.group_size
+        h, w = orig_h // downsample, orig_w // downsample
+        # logger.warning(f"orig_h: {orig_h}, orig_w: {orig_w}, h: {h}, w: {w}, downsample: {downsample}, p_h: {p_h}, p_w: {p_w}")
+        h_, w_ = h // p_h, w // p_w
+        x = x.reshape(bsz, head, h_, p_h, w_, p_w, c)
+        x = torch.einsum("nxhpwqc->nxhwpqc", x)
+        x = x.reshape(bsz, head, -1, c)
+        return x
+
+    def unclusterify(self, x):
+        # GRAT restore clusters to original shape
+        bsz, head, n, c = x.shape
+        orig_h, orig_w = self._grat_info["size"]
+        orig_tokens = orig_h * orig_w
+        downsample = int(math.ceil(math.sqrt(orig_tokens // n)))
+        p_h, p_w = self.group_size
+        h, w = orig_h // downsample, orig_w // downsample
+        h_, w_ = h // p_h, w // p_w
+        x = x.reshape(bsz, head, h_, w_, p_h, p_w, c)
+        x = torch.einsum("nxhwpqc->nxhpwqc", x)
+        x = x.reshape(bsz, head, -1, c)
+        return x
 
     def set_use_memory_efficient_attention(self, xformers, mem_eff):
         self.use_memory_efficient_attention_xformers = xformers
@@ -548,10 +608,24 @@ class CrossAttention(nn.Module):
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
 
-        if sdpa == "rocm_flash_attn" and flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
-            out = FlashAttnFuncNavi.apply(q, k, v, mask, False, None, None)
+        if self._grat_info is None:
+            if sdpa == "rocm_flash_attn" and flash_attn_rocm_installed and not torch.is_grad_enabled() and q.shape[-1] <= 512:
+                out = FlashAttnFuncNavi.apply(q, k, v, mask, False, None, None)
+            else:
+                out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
         else:
-            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False)
+            orig_h, orig_w = self._grat_info["size"]
+            orig_tokens = orig_h * orig_w
+            downsample = int(math.ceil(math.sqrt(orig_tokens // q.shape[2])))
+            height, width = orig_h // downsample, orig_w // downsample
+            p_h, p_w = self.group_size
+            mask = get_block_mask(height, width, p_h, p_w, device=q.device)
+
+            q = self.clusterify(q)
+            k = self.clusterify(k)
+            v = self.clusterify(v)
+            out = self.flex_attn(q, k, v, block_mask=mask)
+            out = self.unclusterify(out)
 
         out = rearrange(out, "b h n d -> b n (h d)", h=h)
 
@@ -1024,6 +1098,17 @@ class SdxlUNet2DConditionModel(nn.Module):
             [GroupNorm32(32, self.model_channels), nn.SiLU(), nn.Conv2d(self.model_channels, self.out_channels, 3, padding=1)]
         )
 
+        # GRAT info
+        self._grat_info = {}
+        # add ref to grat_info to every attn1
+        for _, module in self.named_modules():
+            if module.__class__.__name__ == "Transformer2DModel":
+                if len(module.transformer_blocks) != 2:
+                    continue
+                for _, submodule in module.named_modules():
+                    if submodule.__class__.__name__ == "BasicTransformerBlock":
+                        submodule.attn1._grat_info = self._grat_info
+
     # region diffusers compatibility
     def prepare_config(self):
         self.config = SimpleNamespace()
@@ -1078,6 +1163,8 @@ class SdxlUNet2DConditionModel(nn.Module):
     # endregion
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
+        self._grat_info["size"] = (x.shape[2], x.shape[3])
+
         # broadcast timesteps to batch dimension
         timesteps = timesteps.expand(x.shape[0])
 
