@@ -4132,6 +4132,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="The Huber loss scale parameter. Only used if one of the huber loss modes (huber or smooth l1) is selected with loss_type. default is 1.0"
         " / Huber損失のスケールパラメータ。loss_typeがhuberまたはsmooth l1の場合に有効。デフォルトは1.0",
     )
+    parser.add_argument(
+        "--immiscible_diffusion",
+        type=int,
+        help="enable Immiscible Diffusion, generates batch of N noise tensors and selects closest image-noise pairs",
+    )
 
     parser.add_argument(
         "--lowram",
@@ -6103,7 +6108,20 @@ def get_noise_noisy_latents_and_timesteps(
     args, noise_scheduler, latents: torch.FloatTensor
 ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.IntTensor]:
     # Sample noise that we'll add to the latents
-    noise = torch.randn_like(latents, device=latents.device)
+    if args.immiscible_diffusion:
+        # Immiscible Diffusion https://arxiv.org/abs/2406.12303
+        from scipy.optimize import linear_sum_assignment
+        n = args.immiscible_diffusion
+        size = [n] + list(latents.shape[1:])
+        noise = torch.randn(size, dtype=latents.dtype, layout=latents.layout, device=latents.device)
+        # find similar latent-noise pairs
+        latents_expanded = latents.half().unsqueeze(1).expand(-1, n, *latents.shape[1:])
+        noise_expanded = noise.half().unsqueeze(0).expand(latents.shape[0], *noise.shape)
+        dist = (latents_expanded - noise_expanded)**2
+        dist = dist.mean(list(range(2, dist.dim()))).cpu()
+        noise = noise[linear_sum_assignment(dist)[1]]
+    else:
+        noise = torch.randn_like(latents, device=latents.device)
     if args.noise_offset:
         if args.noise_offset_random_strength:
             noise_offset = torch.rand(1, device=latents.device) * args.noise_offset
