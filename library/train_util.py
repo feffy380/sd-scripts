@@ -6191,8 +6191,10 @@ def conditional_loss(
         elif reduction == "sum":
             loss = torch.sum(loss)
     elif loss_type == "ffl":
+        mse_loss = torch.nn.functional.mse_loss(model_pred, target, reduction=reduction)
         ffl = FFL(loss_weight=1.0, alpha=1.0, reduction=reduction)
-        loss = ffl(model_pred, target)
+        ffl_loss = ffl(model_pred, target)
+        loss = mse_loss + ffl_loss
     else:
         raise NotImplementedError(f"Unsupported Loss Type: {loss_type}")
     return loss
