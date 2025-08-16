@@ -23,7 +23,10 @@ import hashlib
 import subprocess
 from io import BytesIO
 import toml
-from focal_frequency_loss import FocalFrequencyLoss as FFL
+try:
+    from focal_frequency_loss import FocalFrequencyLoss as FFL
+except ImportError:
+    pass
 
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
