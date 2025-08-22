@@ -1280,12 +1280,13 @@ class NetworkTrainer:
         # learned loss weights
         lossweightMLP = None
         if args.learned_loss_weights:
-            import networks.lossweightMLP as lossweightmodule
+            logger.info("Setting up Loss Weighting MLP...")
+            lossweightmodule = importlib.import_module("networks.lossweightMLP")
             import copy
             lossweightMLP, MLP_optim = lossweightmodule.create_weight_MLP(noise_scheduler)
             aaa = copy.deepcopy(args)
-            aaa.lr_warmup_steps = 100
-            aaa.lr_scheduler_args = ["constant_steps=300"]
+            aaa.lr_warmup_steps = 200
+            aaa.lr_scheduler_args = ["constant_steps=200"]
             aaa.lr_scheduler = "inverse_sqrt_warmup"
             MLP_scheduler = train_util.get_scheduler_fix(aaa, MLP_optim, accelerator.num_processes)
             del aaa
@@ -1938,6 +1939,44 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use learned loss weights for training / 学習時に学習した損失重みを使用する",
     )
+
+    # m8's color correction
+    parser.add_argument(
+        "--color_correction",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--scale_latents_time",
+        type=str,
+        default="max",
+    )
+    parser.add_argument(
+        "--latentmin",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--latentrange",
+        type=float,
+        default=4.0,
+    )
+    parser.add_argument(
+        "--prob_divisor",
+        type=float,
+        default=5.0,
+    )
+    parser.add_argument(
+        "--firsttimestep",
+        type=int,
+        default=750,
+    )
+    parser.add_argument(
+        "--no_decay_probs",
+        action="store_true",
+        default=False,
+    )
+
     return parser
 
 

@@ -6151,6 +6151,38 @@ def get_noise_noisy_latents_and_timesteps(
         else:
             strength = args.ip_noise_gamma
         noisy_latents = noise_scheduler.add_noise(latents, noise + strength * torch.randn_like(latents), timesteps)
+    elif args.color_correction:  # assuming max timestep 1000
+        progress = torch.maximum(
+            (timesteps - args.firsttimestep) / (max_timestep - min_timestep - args.firsttimestep),
+            torch.zeros_like(timesteps, dtype=timesteps.dtype, device=timesteps.device)
+        )
+        if args.no_decay_probs != True:
+            probs = progress / args.prob_divisor
+        else:
+            probs = torch.where(
+                timesteps >= args.firsttimestep,
+                1 / args.prob_divisor,
+                0,
+            )
+        mask = torch.bernoulli(probs).to(latents.device)  # input tensor of probabilities
+
+        minmax = args.latentrange
+        if args.scale_latents_time == "max":
+            latentmin = args.latentmin  # min is arg no scaling
+            latentmax = latentmin + minmax * progress  # max goes down to min as 1000 -> 750
+        elif args.scale_latents_time == "both":
+            latentmin = 1 + args.latentmin * progress  # min is 1, goes up to 1 + latentmin at 1000
+            latentmax = latentmin + minmax  # max goes down with min
+        else:
+            latentmin = args.latentmin  # min is arg no scaling
+            latentmax = latentmin + minmax  # max is min + range no scaling
+
+        random_multiplier = torch.rand((b_size,), dtype=latents.dtype, device=latents.device) * (latentmax - latentmin) + latentmin  # range min->max
+        random_multiplier = (random_multiplier * mask) + (1.0 * (1 - mask))  # masked out some
+        random_multiplier = random_multiplier[:, None, None, None]
+
+        latents = latents * random_multiplier
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
     else:
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
