@@ -84,6 +84,13 @@ def index_sv_ratio(S, target):
     return index
 
 
+def fast_decompose(up, down):
+    Qu, Ru = torch.linalg.qr(up.flatten(start_dim=1))
+    Qd, Rd = torch.linalg.qr(down.flatten(start_dim=1).mT)
+    Uc, Sc, Vhc = torch.linalg.svd(Ru @ Rd.mT, full_matrices=False)
+    return Qu @ Uc, Sc, Vhc @ Qd.mT
+
+
 # Modified from Kohaku-blueleaf's extract/merge functions
 def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
     out_size, in_size, kernel_size, _ = weight.size()
@@ -103,10 +110,12 @@ def extract_conv(weight, lora_rank, dynamic_method, dynamic_param, device, scale
     return param_dict
 
 
-def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
-    out_size, in_size = weight.size()
+def extract_linear(up_weight, down_weight, lora_rank, dynamic_method, dynamic_param, device, scale=1):
+    in_rank, in_size = down_weight.shape
+    out_size, out_rank = up_weight.shape
 
-    U, S, Vh = torch.linalg.svd(weight.to(device))
+    # U, S, Vh = torch.linalg.svd(weight.to(device))
+    U, S, Vh = fast_decompose(up_weight.to(device), down_weight.to(device))
 
     param_dict = rank_resize(S, lora_rank, dynamic_method, dynamic_param, scale)
     lora_rank = param_dict["new_rank"]
@@ -118,7 +127,7 @@ def extract_linear(weight, lora_rank, dynamic_method, dynamic_param, device, sca
 
     param_dict["lora_down"] = Vh.reshape(lora_rank, in_size).cpu()
     param_dict["lora_up"] = U.reshape(out_size, lora_rank).cpu()
-    del U, S, Vh, weight
+    del U, S, Vh
     return param_dict
 
 
@@ -264,8 +273,7 @@ def resize_lora_model(lora_sd, new_rank, new_conv_rank, save_dtype, device, dyna
                     full_weight_matrix = merge_conv(lora_down_weight, lora_up_weight, device)
                     param_dict = extract_conv(full_weight_matrix, new_conv_rank, dynamic_method, dynamic_param, device, scale)
                 else:
-                    full_weight_matrix = merge_linear(lora_down_weight, lora_up_weight, device)
-                    param_dict = extract_linear(full_weight_matrix, new_rank, dynamic_method, dynamic_param, device, scale)
+                    param_dict = extract_linear(lora_up_weight, lora_down_weight, new_rank, dynamic_method, dynamic_param, device, scale)
 
                 if verbose:
                     max_ratio = param_dict["max_ratio"]
