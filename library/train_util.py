@@ -5229,7 +5229,7 @@ def get_optimizer_train_eval_fn(optimizer: Optimizer, args: argparse.Namespace) 
 
 
 def is_schedulefree_optimizer(optimizer: Optimizer, args: argparse.Namespace) -> bool:
-    return args.optimizer_type.lower().endswith("schedulefree".lower())  # or args.optimizer_schedulefree_wrapper
+    return "schedulefree" in args.optimizer_type.lower()  # or args.optimizer_schedulefree_wrapper
 
 
 def get_dummy_scheduler(optimizer: Optimizer) -> Any:
