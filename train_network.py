@@ -332,7 +332,7 @@ class NetworkTrainer:
                 network.set_multiplier(1.0)  # may be overwritten by "network_multipliers" in the next step
                 target[diff_output_pr_indices] = noise_pred_prior.to(target.dtype)
 
-        return noise_pred, target, timesteps, None
+        return noise_pred, target, timesteps, None, noise
 
     def post_process_loss(self, loss, args, timesteps: torch.IntTensor, noise_scheduler) -> torch.FloatTensor:
         if args.min_snr_gamma:
@@ -459,7 +459,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
+        noise_pred, target, timesteps, weighting, noise = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -475,6 +475,25 @@ class NetworkTrainer:
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+
+        # contrastive flow matching
+        if args.v_parameterization and args.contrastive_flow_matching:
+            # Create negative pairs by rolling the batch tensors.
+            shuffle_idx = torch.arange(latents.shape[0], device=latents.device).roll(1)
+            negative_latents = latents[shuffle_idx]
+            negative_noise = noise[shuffle_idx]
+
+            # Calculate the velocity target for the negative pairs.
+            with torch.no_grad():
+                target_negative = noise_scheduler.get_velocity(negative_latents, negative_noise, timesteps)
+
+            # Calculate the two loss components.
+            loss_fm = loss
+            loss_contrastive = torch.nn.functional.mse_loss(noise_pred.float(), target_negative.float(), reduction="none")
+
+            # Combine them according to the ΔFM objective.
+            loss = loss_fm - args.cfm_lambda * loss_contrastive
+
         if weighting is not None:
             loss = loss * weighting
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
@@ -1975,6 +1994,15 @@ def setup_parser() -> argparse.ArgumentParser:
         "--no_decay_probs",
         action="store_true",
         default=False,
+    )
+
+    parser.add_argument(
+        "--contrastive_flow_matching", action="store_true",
+        help="Enable Contrastive Flow Matching (ΔFM) objective. Only works with v-parameterization."
+    )
+    parser.add_argument(
+        "--cfm_lambda", type=float, default=0.05,
+        help="Lambda weight for the contrastive term in ΔFM loss (default: 0.05)."
     )
 
     return parser
