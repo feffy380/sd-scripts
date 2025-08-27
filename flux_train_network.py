@@ -544,5 +544,10 @@ if __name__ == "__main__":
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 
+    # fallback because ROCm flash attention is broken
+    torch.backends.cuda.enable_flash_sdp(False)
+    torch.backends.cuda.enable_mem_efficient_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
+
     trainer = FluxNetworkTrainer()
     trainer.train(args)
