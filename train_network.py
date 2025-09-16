@@ -44,6 +44,7 @@ from library.custom_train_functions import (
     add_v_prediction_like_loss,
     apply_debiased_estimation,
     apply_masked_loss,
+    apply_aligned_vpred_loss
 )
 from library.utils import setup_logging, add_logging_arguments
 from library.low_precision_norm import apply_low_precision_norm, undo_low_precision_norm
@@ -504,6 +505,8 @@ class NetworkTrainer:
         loss = loss * loss_weights
 
         loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
+        if args.aligned_vpred_loss:
+            loss = apply_aligned_vpred_loss(loss, noise_pred, target, args.aligned_vpred_alpha)
         if args.learned_loss_weights:
             loss, loss_scaled = lossweightMLP(loss, timesteps)
 

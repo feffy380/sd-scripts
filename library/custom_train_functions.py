@@ -108,6 +108,26 @@ def apply_debiased_estimation(loss: torch.Tensor, timesteps: torch.IntTensor, no
     return loss
 
 
+def apply_aligned_vpred_loss(loss, pred, target, alpha):
+    """
+    Applies the aligned v-prediction loss function from Algorithm 2.
+    L = lerp(MSE(v, pred), 1 - cos(v, pred), alpha)
+    The `loss` passed in is assumed to be the per-sample MSE component.
+    """
+    # Ensure tensors are flat for cosine similarity calculation (batch_size, num_elements)
+    pred_flat = pred.flatten(1)
+    target_flat = target.flatten(1)
+
+    # Calculate the directional loss component: L_dir = 1 - cos(v, pred)
+    # The result is a tensor of shape (batch_size,)
+    dir_loss = 1 - torch.nn.functional.cosine_similarity(pred_flat, target_flat, dim=1)
+
+    # Combine the MSE and directional loss
+    # `loss` is already the pre-sample MSE, so we just need to lerp between it and dir_loss
+    combined_loss = torch.lerp(loss, dir_loss, alpha)
+    return combined_loss
+
+
 # TODO train_utilと分散しているのでどちらかに寄せる
 
 
@@ -133,6 +153,17 @@ def add_custom_train_arguments(parser: argparse.ArgumentParser, support_weighted
         "--debiased_estimation_loss",
         action="store_true",
         help="debiased estimation loss / debiased estimation loss",
+    )
+    parser.add_argument(
+        "--aligned_vpred_loss",
+        action="store_true",
+        help="Enable aligned v-prediction loss, which adds a directional (cosine similarity) loss component. Recommended for flow-matching or v-pred models.",
+    )
+    parser.add_argument(
+        "--aligned_vpred_alpha",
+        type=float,
+        default=0.1,
+        help="Alpha hyperparameter for aligned v-prediction loss. Balances MSE and directional loss. (default: 0.1)",
     )
     if support_weighted_captions:
         parser.add_argument(
