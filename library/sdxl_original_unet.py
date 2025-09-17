@@ -439,6 +439,14 @@ class CrossAttention(nn.Module):
         tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
         return tensor
 
+    def apply_qkv(self, x, context=None):
+        q = self.to_q(x)
+        context = context if context is not None else x
+        context = context.to(x.dtype)
+        k = self.to_k(context)
+        v = self.to_v(context)
+        return q, k, v
+
     def forward(self, hidden_states, context=None, mask=None):
         if self.use_memory_efficient_attention_xformers:
             return self.forward_memory_efficient_xformers(hidden_states, context, mask)
@@ -447,10 +455,7 @@ class CrossAttention(nn.Module):
         if self.use_sdpa:
             return self.forward_sdpa(hidden_states, context, mask, self.use_sdpa)
 
-        query = self.to_q(hidden_states)
-        context = context if context is not None else hidden_states
-        key = self.to_k(context)
-        value = self.to_v(context)
+        query, key, value = self.apply_qkv(hidden_states, context)
 
         query = self.reshape_heads_to_batch_dim(query)
         key = self.reshape_heads_to_batch_dim(key)
@@ -492,11 +497,7 @@ class CrossAttention(nn.Module):
         import xformers.ops
 
         h = self.heads
-        q_in = self.to_q(x)
-        context = context if context is not None else x
-        context = context.to(x.dtype)
-        k_in = self.to_k(context)
-        v_in = self.to_v(context)
+        q_in, k_in, v_in = self.apply_qkv(x, context)
 
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b n h d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
@@ -519,11 +520,7 @@ class CrossAttention(nn.Module):
         k_bucket_size = 1024
 
         h = self.heads
-        q = self.to_q(x)
-        context = context if context is not None else x
-        context = context.to(x.dtype)
-        k = self.to_k(context)
-        v = self.to_v(context)
+        q, k, v = self.apply_qkv(x, context)
         del context, x
 
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
@@ -539,11 +536,7 @@ class CrossAttention(nn.Module):
 
     def forward_sdpa(self, x, context=None, mask=None, sdpa=True):
         h = self.heads
-        q_in = self.to_q(x)
-        context = context if context is not None else x
-        context = context.to(x.dtype)
-        k_in = self.to_k(context)
-        v_in = self.to_v(context)
+        q_in, k_in, v_in = self.apply_qkv(x, context)
 
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q_in, k_in, v_in))
         del q_in, k_in, v_in
