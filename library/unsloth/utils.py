@@ -704,7 +704,7 @@ def fast_linear_forward(proj, X, temp_lora = None, out = None):
 pass
 
 
-def matmul_lora(X, W, W_quant, A, B, s, out = None):
+def matmul_lora(X, W, W_quant, A, B, s, bias, out = None):
     dtype = X.dtype
     W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
 
@@ -716,6 +716,8 @@ def matmul_lora(X, W, W_quant, A, B, s, out = None):
         reshape = False
     pass
     out = torch_matmul(X, W, out = out)
+    if bias is not None:
+        out.add_(bias)
     if W_quant is not None: del W
 
     if A is not None:

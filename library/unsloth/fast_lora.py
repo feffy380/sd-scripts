@@ -33,6 +33,7 @@ def get_lora_parameters(proj):
         proj.loraA[0].weight,
         proj.loraB[0].weight,
         proj.loraS,
+        getattr(proj, "bias", None),
     )
 
 
@@ -77,17 +78,17 @@ class LoRA_MLP(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor,
-                gateW, gateW_quant, gateA, gateB, gateS,
-                  upW,   upW_quant, upA,   upB,   upS,
-                downW, downW_quant, downA, downB, downS,
+                gateW, gateW_quant, gateA, gateB, gateS, gateBias,
+                  upW,   upW_quant, upA,   upB,   upS, upBias,
+                downW, downW_quant, downA, downB, downS, downBias,
                 _forward_function, _backward_function,
                 inplace = True,):
         dtype = X.dtype
 
-        e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS)
-        g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS)
+        e = matmul_lora(X, gateW, gateW_quant, gateA, gateB, gateS, gateBias)
+        g = matmul_lora(X,   upW,   upW_quant,   upA,   upB,   upS, upBias)
         h = _forward_function(e, g)
-        i = matmul_lora(h, downW, downW_quant, downA, downB, downS)
+        i = matmul_lora(h, downW, downW_quant, downA, downB, downS, downBias)
 
         ctx.custom_saved_tensors = (
             gateW, gateW_quant, gateS,
@@ -123,7 +124,7 @@ class LoRA_MLP(torch.autograd.Function):
         gateA, gateB, upA, upB, downA, downB = \
             gateA.t(), gateB.t(), upA.t(), upB.t(), downA.t(), downB.t()
 
-        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS)
+        DW = matmul_lora(dY, downW.t(), downW_quant, downB, downA, downS, None)
         DW, e, g = _backward_function(DW, e, g)
         h, df, de = DW, e, g
 
@@ -173,13 +174,13 @@ class LoRA_MLP(torch.autograd.Function):
         # dX += de @ gateB.to(dtype).t() @ (gateS * gateA.to(dtype).t())
         dX.addmm_(de @ gateB.t(), gateA.t(), alpha = gateS)
 
-        # gateW, gateW_quant, gateA, gateB, gateS,
-        #  upW,    upW_quant,   upA,   upB,   upS,
-        # downW, downW_quant, downA, downB, downS,
+        # gateW, gateW_quant, gateA, gateB, gateS, gateBias,
+        #  upW,    upW_quant,   upA,   upB,   upS, upBias,
+        # downW, downW_quant, downA, downB, downS, downBias,
         return dX.view(batch, seq_len, hd), \
-            None, None, d_gateA.t(), d_gateB.t(), None, \
-            None, None,   d_upA.t(),   d_upB.t(), None, \
-            None, None, d_downA.t(), d_downB.t(), None, \
+            None, None, d_gateA.t(), d_gateB.t(), None, None, \
+            None, None,   d_upA.t(),   d_upB.t(), None, None, \
+            None, None, d_downA.t(), d_downB.t(), None, None, \
             None, None, None, # _backward and _forward and inplace
     pass
 pass
@@ -214,17 +215,18 @@ from .geglu import geglu_exact_forward_kernel, geglu_exact_backward_kernel
 #     return out
 def apply_lora_mlp_geglu_exact(self, X, inplace = True):
     # gate and up are fused in sdxl
-    gateUpW, gateUpW_quant, gateUpA, gateUpB, gateUpS = get_lora_parameters(self.net[0].proj)
+    gateUpW, gateUpW_quant, gateUpA, gateUpB, gateUpS, gateUpBias = get_lora_parameters(self.net[0].proj)
     upW, gateW = gateUpW.chunk(2, dim=0)
     upA, gateA = gateUpA, gateUpA  # shared between both
     upB, gateB = gateUpB.chunk(2, dim=0)
     gateW_quant, upW_quant = gateUpW_quant, gateUpW_quant
     gateS, upS = gateUpS, gateUpS
-    downW, downW_quant, downA, downB, downS = get_lora_parameters(self.net[2])
+    upBias, gateBias = gateUpBias.chunk(2, dim=0)
+    downW, downW_quant, downA, downB, downS, downBias = get_lora_parameters(self.net[2])
     out = LoRA_MLP.apply(X,
-                         gateW, gateW_quant, gateA, gateB, gateS,
-                         upW,     upW_quant, upA,   upB,   upS,
-                         downW, downW_quant, downA, downB, downS,
+                         gateW, gateW_quant, gateA, gateB, gateS, gateBias,
+                         upW,     upW_quant, upA,   upB,   upS, upBias,
+                         downW, downW_quant, downA, downB, downS, downBias,
                          geglu_exact_forward_kernel, geglu_exact_backward_kernel,
                          inplace,)
     return out
@@ -278,15 +280,15 @@ class LoRA_QKV(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor, context : torch.Tensor,
-                QW, QW_quant, QA, QB, QS,
-                KW, KW_quant, KA, KB, KS,
-                VW, VW_quant, VA, VB, VS,
+                QW, QW_quant, QA, QB, QS, Qbias,
+                KW, KW_quant, KA, KB, KS, Kbias,
+                VW, VW_quant, VA, VB, VS, Vbias,
                 inplace = True):
         dtype = X.dtype
 
-        Q = matmul_lora(X, QW, QW_quant, QA, QB, QS)
-        K = matmul_lora(context, KW, KW_quant, KA, KB, KS)
-        V = matmul_lora(context, VW, VW_quant, VA, VB, VS)
+        Q = matmul_lora(X, QW, QW_quant, QA, QB, QS, Qbias)
+        K = matmul_lora(context, KW, KW_quant, KA, KB, KS, Kbias)
+        V = matmul_lora(context, VW, VW_quant, VA, VB, VS, Vbias)
 
         ctx.custom_saved_tensors = (
             QW, QW_quant, QS,
@@ -377,15 +379,15 @@ class LoRA_QKV(torch.autograd.Function):
         # dX += dV @ VB.to(dtype).t() @ (VS * VA.to(dtype).t())
         d_context.addmm_(dV @ VB.t(), VA.t(), alpha = VS)
 
-        # QW, QW_quant, QA, QB, QS,
-        # KW, KW_quant, KA, KB, KS,
-        # VW, VW_quant, VA, VB, VS,
+        # QW, QW_quant, QA, QB, QS, Qbias,
+        # KW, KW_quant, KA, KB, KS, Kbias,
+        # VW, VW_quant, VA, VB, VS, Vbias,
         dX = dX.view(batch, seq_len, hd)
         d_context_out = d_context.view(cbatch, cseq_len, chd)
         return dX, d_context_out, \
-            None, None, d_QA.t(), d_QB.t(), None, \
-            None, None, d_KA.t(), d_KB.t(), None, \
-            None, None, d_VA.t(), d_VB.t(), None, \
+            None, None, d_QA.t(), d_QB.t(), None, None, \
+            None, None, d_KA.t(), d_KB.t(), None, None, \
+            None, None, d_VA.t(), d_VB.t(), None, None, \
             None,
     pass
 pass
@@ -394,13 +396,13 @@ pass
 def apply_lora_qkv(self, X, context = None, inplace = True):
     context = context if context is not None else X
     context = context.to(X.dtype)
-    QW, QW_quant, QA, QB, QS = get_lora_parameters(self.to_q)
-    KW, KW_quant, KA, KB, KS = get_lora_parameters(self.to_k)
-    VW, VW_quant, VA, VB, VS = get_lora_parameters(self.to_v)
+    QW, QW_quant, QA, QB, QS, Qbias = get_lora_parameters(self.to_q)
+    KW, KW_quant, KA, KB, KS, Kbias = get_lora_parameters(self.to_k)
+    VW, VW_quant, VA, VB, VS, Vbias = get_lora_parameters(self.to_v)
     Q, K, V = LoRA_QKV.apply(X, context,
-        QW, QW_quant, QA, QB, QS,
-        KW, KW_quant, KA, KB, KS,
-        VW, VW_quant, VA, VB, VS,
+        QW, QW_quant, QA, QB, QS, Qbias,
+        KW, KW_quant, KA, KB, KS, Kbias,
+        VW, VW_quant, VA, VB, VS, Vbias,
         inplace,
     )
     return Q, K, V
@@ -437,10 +439,10 @@ class LoRA_W(torch.autograd.Function):
     @staticmethod
     @torch_amp_custom_fwd
     def forward(ctx, X : torch.Tensor,
-                W, W_quant, A, B, S):
+                W, W_quant, A, B, S, bias):
         dtype = X.dtype
-        XW = matmul_lora(X, W, W_quant, A, B, S)
-        ctx.custom_saved_tensors = (W, W_quant, S,)
+        XW = matmul_lora(X, W, W_quant, A, B, S, bias)
+        ctx.custom_saved_tensors = (W, W_quant, S)
         ctx.save_for_backward(A, B, X)
         return XW
     pass
@@ -479,16 +481,16 @@ class LoRA_W(torch.autograd.Function):
         # dX += dY @ B.to(dtype).t() @ (S * A.to(dtype).t())
         dX.addmm_(dY @ B.t(), A.t(), alpha = S)
 
-        # W, W_quant, A, B, S
+        # W, W_quant, A, B, S, bias
         return dX.view(batch, seq_len, hd), \
-            None, None, d_A.t(), d_B.t(), None
+            None, None, d_A.t(), d_B.t(), None, None
     pass
 pass
 
 
 def apply_lora_o(self, X):
-    OW, OW_quant, OA, OB, OS = get_lora_parameters(self)
-    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    OW, OW_quant, OA, OB, OS, bias = get_lora_parameters(self)
+    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS, bias)
     return O
 pass
 
