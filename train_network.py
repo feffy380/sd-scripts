@@ -54,6 +54,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from library.unsloth.layernorm import patch_layernorm, fast_layernorm
+patch_layernorm(fast_layernorm)
+
 
 class NetworkTrainer:
     def __init__(self):

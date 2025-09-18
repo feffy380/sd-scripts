@@ -10,17 +10,18 @@
 import torch
 import torch.nn.functional as F
 
-orig_layer_norm = torch.nn.LayerNorm
+# prefer unsloth's fast layernorm
+# orig_layer_norm = torch.nn.LayerNorm
 orig_group_norm = torch.nn.GroupNorm
 
 
 def apply_low_precision_norm():
-    torch.nn.LayerNorm = LPLayerNorm
+    # torch.nn.LayerNorm = LPLayerNorm
     torch.nn.GroupNorm = LPGroupNorm
 
 
 def undo_low_precision_norm():
-    torch.nn.LayerNorm = orig_layer_norm
+    # torch.nn.LayerNorm = orig_layer_norm
     torch.nn.GroupNorm = orig_group_norm
 
 
