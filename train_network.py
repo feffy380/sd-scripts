@@ -503,6 +503,11 @@ class NetworkTrainer:
         if args.masked_loss or ("alpha_masks" in batch and batch["alpha_masks"] is not None):
             loss = apply_masked_loss(loss, batch)
         loss = loss.mean([1, 2, 3])
+        # prioritize learning lower frequencies
+        if args.low_freq_loss:
+            loss_4x4 = train_util.conditional_loss(torch.nn.functional.avg_pool2d(noise_pred.float(), 4), torch.nn.functional.avg_pool2d(target.float(), 4), args.loss_type, "none", huber_c)
+            loss_4x4 = loss_4x4.mean([1, 2, 3])
+            loss = 0.25 * loss + loss_4x4
 
         loss_weights = batch["loss_weights"]  # 各sampleごとのweight
         loss = loss * loss_weights

@@ -4140,6 +4140,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=int,
         help="enable Immiscible Diffusion, generates batch of N noise tensors and selects closest image-noise pairs",
     )
+    parser.add_argument(
+        "--low_freq_loss",
+        action="store_true",
+        help="Prioritize learning lower frequencies",
+    )
 
     parser.add_argument(
         "--lowram",
