@@ -5118,6 +5118,11 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         if optimizer_class is not None:
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type == "muon":
+        import timm.optim
+        optimizer = timm.optim.create_optimizer_v2(trainable_params, "muon", lr=lr, **optimizer_kwargs)
+        optimizer_class = optimizer.__class__
+
     if optimizer is None:
         # 任意のoptimizerを使う
         case_sensitive_optimizer_type = args.optimizer_type  # not lower
