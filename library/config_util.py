@@ -76,6 +76,7 @@ class BaseSubsetParams:
     validation_seed: int = 0
     validation_split: float = 0.0
     resize_interpolation: Optional[str] = None
+    loss_weight: float = 1.0
 
 
 @dataclass
@@ -198,6 +199,7 @@ class ConfigSanitizer:
         "caption_suffix": str,
         "custom_attributes": dict,
         "resize_interpolation": str,
+        "loss_weight": float,
     }
     # DO means DropOut
     DO_SUBSET_ASCENDABLE_SCHEMA = {

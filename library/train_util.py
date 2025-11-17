@@ -437,9 +437,11 @@ class BaseSubset:
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        loss_weight: float = 1.0,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
+        self.loss_weight = loss_weight
         self.num_repeats = num_repeats
         self.shuffle_caption = shuffle_caption
         self.caption_separator = caption_separator
@@ -501,6 +503,7 @@ class DreamBoothSubset(BaseSubset):
         validation_seed: Optional[int] = None,
         validation_split: Optional[float] = 0.0,
         resize_interpolation: Optional[str] = None,
+        loss_weight: float = 1.0,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified / image_dirは指定が必須です"
 
@@ -529,6 +532,7 @@ class DreamBoothSubset(BaseSubset):
             validation_seed=validation_seed,
             validation_split=validation_split,
             resize_interpolation=resize_interpolation,
+            loss_weight=loss_weight,
         )
 
         self.is_reg = is_reg
@@ -1579,7 +1583,7 @@ class BaseDataset(torch.utils.data.Dataset):
             custom_attributes.append(subset.custom_attributes)
 
             # in case of fine tuning, is_reg is always False
-            loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
+            loss_weights.append(self.prior_loss_weight if image_info.is_reg else subset.loss_weight)
 
             flipped = subset.flip_aug and random.random() < 0.5  # not flipped or flipped with 50% chance
 
