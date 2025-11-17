@@ -1382,7 +1382,7 @@ class NetworkTrainer:
             accelerator.log({}, step=0)
 
         progress_bar = tqdm(
-            initial=initial_step, total=args.max_train_steps, smoothing=0, disable=not accelerator.is_local_main_process, desc="steps", dynamic_ncols=True,
+            initial=initial_step, total=args.max_train_steps, disable=not accelerator.is_local_main_process, desc="steps", dynamic_ncols=True,
         )
 
         # training loop
