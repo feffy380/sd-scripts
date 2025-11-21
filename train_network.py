@@ -1,3 +1,4 @@
+import gc
 import importlib
 import argparse
 import math
@@ -11,11 +12,11 @@ import time
 import json
 from multiprocessing import Value
 import numpy as np
-import toml
 
 from tqdm import tqdm
 
 import torch
+import torch.nn as nn
 from torch.types import Number
 from library.device_utils import init_ipex, clean_memory_on_device
 
@@ -182,7 +183,7 @@ class NetworkTrainer:
         if val_dataset_group is not None:
             val_dataset_group.verify_bucket_reso_steps(64)
 
-    def load_target_model(self, args, weight_dtype, accelerator) -> tuple:
+    def load_target_model(self, args, weight_dtype, accelerator) -> tuple[str, nn.Module, nn.Module, Optional[nn.Module]]:
         text_encoder, vae, unet, _ = train_util.load_target_model(args, weight_dtype, accelerator)
 
         # モデルに xformers とか memory efficient attention を組み込む
@@ -191,6 +192,9 @@ class NetworkTrainer:
             vae.set_use_memory_efficient_attention_xformers(args.xformers)
 
         return model_util.get_model_version_str_for_sd1_sd2(args.v2, args.v_parameterization), text_encoder, vae, unet
+
+    def load_unet_lazily(self, args, weight_dtype, accelerator, text_encoders) -> tuple[nn.Module, List[nn.Module]]:
+        raise NotImplementedError()
 
     def get_tokenize_strategy(self, args):
         return strategy_sd.SdTokenizeStrategy(args.v2, args.max_token_length, args.tokenizer_cache_dir)
@@ -434,13 +438,12 @@ class NetworkTrainer:
         if text_encoder_outputs_list is not None:
             text_encoder_conds = text_encoder_outputs_list  # List of text encoder outputs
 
-
         if len(text_encoder_conds) == 0 or text_encoder_conds[0] is None or train_text_encoder:
             # TODO this does not work if 'some text_encoders are trained' and 'some are not and not cached'
             with torch.set_grad_enabled(is_train and train_text_encoder), accelerator.autocast():
                 # Get the text embedding for conditioning
                 if args.weighted_captions:
-                    input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch['captions'])
+                    input_ids_list, weights_list = tokenize_strategy.tokenize_with_weights(batch["captions"])
                     encoded_text_encoder_conds = text_encoding_strategy.encode_tokens_with_weights(
                         tokenize_strategy,
                         self.get_models_for_text_encoding(args, accelerator, text_encoders),
@@ -523,6 +526,15 @@ class NetworkTrainer:
             loss, loss_scaled = lossweightMLP(loss, timesteps)
 
         return loss.mean()
+
+    def cast_text_encoder(self, args):
+        return True  # default for other than HunyuanImage
+
+    def cast_vae(self, args):
+        return True  # default for other than HunyuanImage
+
+    def cast_unet(self, args):
+        return True  # default for other than HunyuanImage
 
     def train(self, args):
         session_id = random.randint(0, 2**32)
@@ -632,42 +644,23 @@ class NetworkTrainer:
 
         # mixed precisionに対応した型を用意しておき適宜castする
         weight_dtype, save_dtype = train_util.prepare_dtype(args)
-        vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
+        vae_dtype = (torch.float32 if args.no_half_vae else weight_dtype) if self.cast_vae(args) else None
 
         if args.force_ck:
             torch.backends.cuda.preferred_blas_library('ck')
 
-        # モデルを読み込む
+        # load target models: unet may be None for lazy loading
         apply_low_precision_norm()
         model_version, text_encoder, vae, unet = self.load_target_model(args, weight_dtype, accelerator)
         undo_low_precision_norm()
+        if vae_dtype is None:
+            vae_dtype = vae.dtype
+            logger.info(f"vae_dtype is set to {vae_dtype} by the model since cast_vae() is false")
 
         # text_encoder is List[CLIPTextModel] or CLIPTextModel
         text_encoders = text_encoder if isinstance(text_encoder, list) else [text_encoder]
 
-        # 差分追加学習のためにモデルを読み込む
-        sys.path.append(os.path.dirname(__file__))
-        accelerator.print("import network module:", args.network_module)
-        network_module = importlib.import_module(args.network_module)
-
-        if args.base_weights is not None:
-            # base_weights が指定されている場合は、指定された重みを読み込みマージする
-            for i, weight_path in enumerate(args.base_weights):
-                if args.base_weights_multiplier is None or len(args.base_weights_multiplier) <= i:
-                    multiplier = 1.0
-                else:
-                    multiplier = args.base_weights_multiplier[i]
-
-                accelerator.print(f"merging module: {weight_path} with multiplier {multiplier}")
-
-                module, weights_sd = network_module.create_network_from_weights(
-                    multiplier, weight_path, vae, text_encoder, unet, for_inference=True
-                )
-                module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
-
-            accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
-
-        # 学習を準備する
+        # prepare dataset for latents caching if needed
         if cache_latents:
             vae.to(accelerator.device, dtype=vae_dtype)
             vae.requires_grad_(False)
@@ -693,6 +686,32 @@ class NetworkTrainer:
         self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, train_dataset_group, weight_dtype)
         if val_dataset_group is not None:
             self.cache_text_encoder_outputs_if_needed(args, accelerator, unet, vae, text_encoders, val_dataset_group, weight_dtype)
+
+        if unet is None:
+            # lazy load unet if needed. text encoders may be freed or replaced with dummy models for saving memory
+            unet, text_encoders = self.load_unet_lazily(args, weight_dtype, accelerator, text_encoders)
+
+        # 差分追加学習のためにモデルを読み込む
+        sys.path.append(os.path.dirname(__file__))
+        accelerator.print("import network module:", args.network_module)
+        network_module = importlib.import_module(args.network_module)
+
+        if args.base_weights is not None:
+            # base_weights が指定されている場合は、指定された重みを読み込みマージする
+            for i, weight_path in enumerate(args.base_weights):
+                if args.base_weights_multiplier is None or len(args.base_weights_multiplier) <= i:
+                    multiplier = 1.0
+                else:
+                    multiplier = args.base_weights_multiplier[i]
+
+                accelerator.print(f"merging module: {weight_path} with multiplier {multiplier}")
+
+                module, weights_sd = network_module.create_network_from_weights(
+                    multiplier, weight_path, vae, text_encoder, unet, for_inference=True
+                )
+                module.merge_to(text_encoder, unet, weights_sd, weight_dtype, accelerator.device if args.lowram else "cpu")
+
+            accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
 
         # prepare network
         net_kwargs = {}
@@ -723,7 +742,7 @@ class NetworkTrainer:
             return
         network_has_multiplier = hasattr(network, "set_multiplier")
 
-        # TODO remove `hasattr`s by setting up methods if not defined in the network like (hacky but works):
+        # TODO remove `hasattr` by setting up methods if not defined in the network like below  (hacky but will work):
         # if not hasattr(network, "prepare_network"):
         #    network.prepare_network = lambda args: None
 
@@ -885,12 +904,13 @@ class NetworkTrainer:
             unet.to(dtype=unet_weight_dtype)  # do not move to device because unet is not prepared by accelerator
 
         unet.requires_grad_(False)
-        unet.to(dtype=unet_weight_dtype)
+        if self.cast_unet(args):
+            unet.to(dtype=unet_weight_dtype)
         for i, t_enc in enumerate(text_encoders):
             t_enc.requires_grad_(False)
 
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp8/fp16/bf16
-            if t_enc.device.type != "cpu":
+            if t_enc.device.type != "cpu" and self.cast_text_encoder(args):
                 t_enc.to(dtype=te_weight_dtype)
 
                 # nn.Embedding not support FP8
@@ -916,7 +936,8 @@ class NetworkTrainer:
                 # default implementation is:  unet = accelerator.prepare(unet)
                 unet = self.prepare_unet_with_accelerator(args, accelerator, unet)  # accelerator does some magic here
             else:
-                unet.to(accelerator.device, dtype=unet_weight_dtype)  # move to device because unet is not prepared by accelerator
+                # move to device because unet is not prepared by accelerator
+                unet.to(accelerator.device, dtype=unet_weight_dtype if self.cast_unet(args) else None)
             if train_text_encoder:
                 text_encoders = [
                     (accelerator.prepare(t_enc) if flag else t_enc)
@@ -1374,6 +1395,8 @@ class NetworkTrainer:
                 del t_enc
             text_encoders = []
             text_encoder = None
+            gc.collect()
+            clean_memory_on_device(accelerator.device)
 
         # For --sample_at_first
         optimizer_eval_fn()
@@ -1414,7 +1437,7 @@ class NetworkTrainer:
             val_progress_bar = tqdm(range(validation_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="validation steps")
         NUM_VALIDATION_TIMESTEPS = 4  # 200, 400, 600, 800 TODO make this configurable
         min_timestep = 0 if args.min_timestep is None else args.min_timestep
-        max_timestep = noise_scheduler.num_train_timesteps if args.max_timestep is None else args.max_timestep
+        max_timestep = noise_scheduler.config.num_train_timesteps if args.max_timestep is None else args.max_timestep
         validation_timesteps = np.linspace(min_timestep, max_timestep, (NUM_VALIDATION_TIMESTEPS + 2), dtype=int)[1:-1]
         validation_total_steps = validation_steps * len(validation_timesteps)
         original_args_min_timestep = args.min_timestep
