@@ -312,6 +312,10 @@ class NetworkTrainer:
         else:
             target = noise
 
+        if args.differential_guidance:
+            gs = args.differential_guidance_scale
+            target = noise_pred + gs * (target - noise_pred)
+
         # differential output preservation
         if "custom_attributes" in batch:
             diff_output_pr_indices = []
@@ -2014,6 +2018,15 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cfm_lambda", type=float, default=0.05,
         help="Lambda weight for the contrastive term in ΔFM loss (default: 0.05)."
+    )
+
+    parser.add_argument(
+        "--differential_guidance", action="store_true",
+        help="Multiply the difference between target and prediction to bring output closer to the target, to account for learning rate",
+    )
+    parser.add_argument(
+        "--differential_guidance_scale", type=float, default=2.0,
+        help="The scale for differential guidance. default: 2.0",
     )
 
     return parser
