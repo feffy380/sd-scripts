@@ -316,7 +316,7 @@ class NetworkTrainer:
         else:
             target = noise
 
-        if args.differential_guidance:
+        if args.differential_guidance and is_train:
             gs = args.differential_guidance_scale
             target = noise_pred + gs * (target - noise_pred)
 
@@ -486,6 +486,10 @@ class NetworkTrainer:
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
+
+        # use raw loss for validation
+        if not is_train:
+            return loss.mean()
 
         # contrastive flow matching
         if args.v_parameterization and args.contrastive_flow_matching:
