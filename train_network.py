@@ -316,7 +316,7 @@ class NetworkTrainer:
         else:
             target = noise
 
-        if args.differential_guidance and is_train:
+        if args.differential_guidance and (is_train or not args.raw_val_loss):
             gs = args.differential_guidance_scale
             target = noise_pred + gs * (target - noise_pred)
 
@@ -488,7 +488,7 @@ class NetworkTrainer:
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
 
         # use raw loss for validation
-        if not is_train:
+        if not is_train and args.raw_val_loss:
             return loss.mean()
 
         # contrastive flow matching
@@ -2054,6 +2054,11 @@ def setup_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--differential_guidance_scale", type=float, default=2.0,
         help="The scale for differential guidance. default: 2.0",
+    )
+
+    parser.add_argument(
+        "--raw_val_loss", action="store_true",
+        help="Log raw validation loss. Useful for comparing different training losses.",
     )
 
     return parser
