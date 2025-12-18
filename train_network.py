@@ -55,9 +55,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from library.unsloth.layernorm import patch_layernorm, fast_layernorm
-patch_layernorm(fast_layernorm)
-
 
 class NetworkTrainer:
     def __init__(self):
@@ -470,7 +467,7 @@ class NetworkTrainer:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
 
         # sample noise, call unet, get target
-        noise_pred, target, timesteps, weighting, noise = self.get_noise_pred_and_target(
+        noise_pred_and_target = self.get_noise_pred_and_target(
             args,
             accelerator,
             noise_scheduler,
@@ -483,6 +480,11 @@ class NetworkTrainer:
             train_unet,
             is_train=is_train,
         )
+        if len(noise_pred_and_target) == 5:
+            noise_pred, target, timesteps, weighting, noise = noise_pred_and_target
+        else:
+            noise_pred, target, timesteps, noise = noise_pred_and_target
+            weighting = None
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
         loss = train_util.conditional_loss(noise_pred.float(), target.float(), args.loss_type, "none", huber_c)
@@ -652,6 +654,10 @@ class NetworkTrainer:
 
         if args.force_ck:
             torch.backends.cuda.preferred_blas_library('ck')
+
+        if args.unsloth_layernorm:
+            from library.unsloth.layernorm import patch_layernorm, fast_layernorm
+            patch_layernorm(fast_layernorm)
 
         # load target models: unet may be None for lazy loading
         apply_low_precision_norm()
@@ -2060,6 +2066,8 @@ def setup_parser() -> argparse.ArgumentParser:
         "--raw_val_loss", action="store_true",
         help="Log raw validation loss. Useful for comparing different training losses.",
     )
+
+    parser.add_argument("--unsloth_layernorm", action="store_true", help="Use Unsloth LayerNorm triton kernel")
 
     return parser
 
