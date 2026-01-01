@@ -3760,6 +3760,12 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
 
+    parser.add_argument(
+        "--use_orthograd",
+        action="store_true",
+        help="Use OrthoGrad. Projects gradients to be orthogonal to the current parameters before performing an update https://arxiv.org/abs/2501.04697",
+    )
+
     # parser.add_argument(
     #     "--optimizer_schedulefree_wrapper",
     #     action="store_true",
@@ -5208,6 +5214,11 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
 
         optimizer_class = getattr(optimizer_module, case_sensitive_optimizer_type)
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    if args.use_orthograd:
+        from pytorch_optimizer.optimizer import OrthoGrad
+        # NOTE: probably breaks schedulefree
+        optimizer = OrthoGrad(optimizer)
 
     """
     # wrap any of above optimizer with schedulefree, if optimizer is not schedulefree
