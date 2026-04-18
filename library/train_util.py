@@ -744,6 +744,14 @@ class BaseDataset(torch.utils.data.Dataset):
         self.text_encoder_output_caching_strategy = None
         self.latents_caching_strategy = None
 
+        # tag category lookup
+        try:
+            import json
+            self.tag_categories = json.load(open("tag_categories.json"))
+        except:
+            logger.warning("tag_categories.json not found. Filtering disabled")
+            self.tag_categories = {}
+
     def set_current_strategies(self):
         self.tokenize_strategy = TokenizeStrategy.get_strategy()
         self.text_encoder_output_caching_strategy = TextEncoderOutputsCachingStrategy.get_strategy()
@@ -906,10 +914,55 @@ class BaseDataset(torch.utils.data.Dataset):
                 def dropout_tags(tokens):
                     if subset.caption_tag_dropout_rate <= 0:
                         return tokens
+
+                    # m8's tag dropout: randomize caption lengths
+                    randval = random.random()
                     l = []
+                    total_tokens = len(tokens)
+                    tokens_added = 0
+                    limit_tokens = 0
+                    if randval < 0.3:  # 30%
+                        limit_tokens = max(total_tokens * 0.3, 10)
+                    elif randval < 0.5:  # 20%
+                        limit_tokens = max(total_tokens * 0.4, 15)
+                    elif randval < 0.6:  # 10%
+                        limit_tokens = min(total_tokens, 6)
+                    elif randval < 0.64:  # 4%
+                        limit_tokens = min(total_tokens, 4)
+                    else:  # remainder
+                        return tokens
+
+                    # tag categories
+                    # 0 general
+                    # 1 artist
+                    # 2 contributor
+                    # 3 copyright
+                    # 4 character
+                    # 5 species
+                    # 6 invalid
+                    # 7 meta
+                    # 8 lore
+
+                    exempt_categories = {4, 5}
+                    banned_categories = {1}
+
                     for token in tokens:
-                        if random.random() >= subset.caption_tag_dropout_rate:
+                        if (
+                            self.tag_categories.get(token) in exempt_categories
+                            or token.lower() in ["young", "censored", "monochrome"]
+                        ):
                             l.append(token)
+                        elif (
+                            tokens_added < limit_tokens
+                            and self.tag_categories.get(token) not in banned_categories
+                        ):
+                            l.append(token)
+                            tokens_added += 1
+
+                    # l = []
+                    # for token in tokens:
+                    #     if random.random() >= subset.caption_tag_dropout_rate:
+                    #         l.append(token)
                     return l
 
                 if subset.shuffle_caption:
